@@ -6,36 +6,40 @@ import sdl "vendor:sdl2"
 WINDOW_WIDTH :: 640
 WINDOW_HEIGHT :: 480
 
-//Colors
-BLACK :: u32(0x00000000)
-WHITE :: u32(0xFFFFFFFF)
-RED :: u32(0xFF0000FF)
-BLUE :: u32(0x0000FFFF)
-
 Game :: struct {
-	running:        bool,
-	backbuffer:     ^sdl.Surface,
-	window_surface: ^sdl.Surface,
-	window:         ^sdl.Window,
+	running: bool,
+	// `^sdl.Surface.pixels` for window surface is essentially the backbuffer
+	// sdl.UpdateWindowSurface will then apply the buffer
+	surface: ^sdl.Surface,
+	window:  ^sdl.Window,
 }
 
-resize_surface :: proc(g: ^Game, w, h: i32) {
-	if g.backbuffer != nil {
-		sdl.FreeSurface(g.backbuffer)
-		g.backbuffer = nil
+
+resize_surface :: proc(g: ^Game) {
+
+	if g.surface != nil {
+		sdl.FreeSurface(g.surface)
+		g.surface = nil
 	}
 
-	format := g.window_surface.format.format
+	g.surface = sdl.GetWindowSurface(g.window)
 
-	g.backbuffer = sdl.CreateRGBSurfaceWithFormat(0, w, h, 32, format)
+	w := g.surface.w
+	h := g.surface.h
 
-	if g.backbuffer == nil {
-		panic(fmt.tprintf("Error creating backbuffer: %s", sdl.GetError()))
+	pitch := w * 4
+
+	if g.surface == nil {
+		panic(fmt.tprintf("Error creating surface: %s", sdl.GetError()))
+	}
+
+	pixels := cast([^]u32)(g.surface.pixels)
+	for i in 0 ..< w * h {
+		pixels[i] = sdl.MapRGB(g.surface.format, 255, 0, 0)
 	}
 }
 
 update_window :: proc(g: ^Game) {
-	sdl.BlitSurface(g.backbuffer, nil, g.window_surface, nil)
 	sdl.UpdateWindowSurface(g.window)
 }
 
@@ -61,38 +65,22 @@ main :: proc() {
 	assert(g.window != nil, fmt.tprintf("Error creating window: %s", sdl.GetError()))
 	defer sdl.DestroyWindow(g.window)
 
-	g.window_surface = sdl.GetWindowSurface(g.window)
-	if g.window_surface == nil {
-		panic(fmt.tprintf("Error getting window surface: %s", sdl.GetError()))
-	}
+	resize_surface(&g)
+	update_window(&g)
 
-	resize_surface(&g, WINDOW_WIDTH, WINDOW_HEIGHT)
-	defer sdl.FreeSurface(g.backbuffer)
-
-
-	// loop
 	event: sdl.Event
-	color := BLUE
 
-	for g.running {
+	main_loop: for g.running {
 		for sdl.PollEvent(&event) {
 			#partial switch event.type {
 			case .QUIT:
 				g.running = false
-			case .KEYDOWN:
-				if color == BLUE {
-					color = RED
-				} else {
-					color = BLUE
-				}
 			case .WINDOWEVENT:
 				if event.window.event == sdl.WindowEventID.RESIZED {
-					g.window_surface = sdl.GetWindowSurface(g.window)
-					resize_surface(&g, event.window.data1, event.window.data2)
+					resize_surface(&g)
+					update_window(&g)
 				}
 			}
 		}
-		sdl.FillRect(g.backbuffer, nil, color)
-		update_window(&g)
 	}
 }
