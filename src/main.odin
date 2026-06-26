@@ -8,41 +8,41 @@ WINDOW_HEIGHT :: 480
 
 Game :: struct {
 	running: bool,
-	// `^sdl.Surface.pixels` for window surface is essentially the backbuffer
-	// sdl.UpdateWindowSurface will then apply the buffer
 	surface: ^sdl.Surface,
 	window:  ^sdl.Window,
 }
 
+render_weird_gradient :: proc(backbuffer: ^sdl.Surface, blue_offset, green_offset: i32) {
+	width := backbuffer.w
+	height := backbuffer.h
+	pitch := backbuffer.pitch
+
+	row := ([^]u8)(backbuffer.pixels)
+
+	for y in 0 ..< height {
+		pixel := ([^]u32)(row)
+
+		for x in 0 ..< width {
+			blue := u8(x + blue_offset)
+			green := u8(y + green_offset)
+
+			pixel[x] = (u32(green) << 8) | u32(blue)
+		}
+
+		row = ([^]u8)(uintptr(row) + uintptr(pitch))
+	}
+}
 
 resize_surface :: proc(g: ^Game) {
-
-	if g.surface != nil {
-		sdl.FreeSurface(g.surface)
-		g.surface = nil
-	}
-
 	g.surface = sdl.GetWindowSurface(g.window)
-
-	w := g.surface.w
-	h := g.surface.h
-
-	pitch := w * 4
-
 	if g.surface == nil {
 		panic(fmt.tprintf("Error creating surface: %s", sdl.GetError()))
-	}
-
-	pixels := cast([^]u32)(g.surface.pixels)
-	for i in 0 ..< w * h {
-		pixels[i] = sdl.MapRGB(g.surface.format, 255, 0, 0)
 	}
 }
 
 update_window :: proc(g: ^Game) {
 	sdl.UpdateWindowSurface(g.window)
 }
-
 
 main :: proc() {
 	g := Game{}
@@ -69,6 +69,8 @@ main :: proc() {
 	update_window(&g)
 
 	event: sdl.Event
+	x_offset: i32 = 0
+	y_offset: i32 = 0
 
 	main_loop: for g.running {
 		for sdl.PollEvent(&event) {
@@ -78,9 +80,15 @@ main :: proc() {
 			case .WINDOWEVENT:
 				if event.window.event == sdl.WindowEventID.RESIZED {
 					resize_surface(&g)
-					update_window(&g)
+
 				}
 			}
 		}
+
+		render_weird_gradient(g.surface, x_offset, y_offset)
+		update_window(&g)
+
+		x_offset += 1
+		y_offset += 2
 	}
 }
