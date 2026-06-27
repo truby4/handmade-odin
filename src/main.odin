@@ -12,12 +12,12 @@ Game :: struct {
 	window:  ^sdl.Window,
 }
 
-render_weird_gradient :: proc(backbuffer: ^sdl.Surface, blue_offset, green_offset: i32) {
-	width := backbuffer.w
-	height := backbuffer.h
-	pitch := backbuffer.pitch
+render_weird_gradient :: proc(buffer: ^sdl.Surface, blue_offset, green_offset: i32) {
+	width := buffer.w
+	height := buffer.h
+	pitch := buffer.pitch
 
-	row := ([^]u8)(backbuffer.pixels)
+	row := ([^]u8)(buffer.pixels)
 
 	for y in 0 ..< height {
 		pixel := ([^]u32)(row)
@@ -82,13 +82,32 @@ main :: proc() {
 					resize_surface(&g)
 
 				}
+			case .KEYDOWN:
+				key := event.key.keysym.sym
+				// Only handles one key at a time??
+				#partial switch key {
+				case sdl.Keycode.ESCAPE:
+					fmt.println("ESCAPE")
+				}
 			}
+		}
+
+		keys := sdl.GetKeyboardState(nil)
+
+		if keys[int(sdl.SCANCODE_W)] != 0 {
+			y_offset += 2
+		}
+		if keys[int(sdl.SCANCODE_S)] != 0 {
+			y_offset -= 2
+		}
+		if keys[int(sdl.SCANCODE_A)] != 0 {
+			x_offset += 2
+		}
+		if keys[int(sdl.SCANCODE_D)] != 0 {
+			x_offset -= 2
 		}
 
 		render_weird_gradient(g.surface, x_offset, y_offset)
 		update_window(&g)
-
-		x_offset += 1
-		y_offset += 2
 	}
 }
