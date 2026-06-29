@@ -7,9 +7,12 @@ WINDOW_WIDTH :: 640
 WINDOW_HEIGHT :: 480
 
 Game :: struct {
-	running: bool,
-	surface: ^sdl.Surface,
-	window:  ^sdl.Window,
+	running:         bool,
+	surface:         ^sdl.Surface,
+	window:          ^sdl.Window,
+	audio_device_id: sdl.AudioDeviceID,
+	audio_state:     Audio_State,
+	audio_pause_on:  bool,
 }
 
 render_weird_gradient :: proc(buffer: ^sdl.Surface, blue_offset, green_offset: i32) {
@@ -44,6 +47,7 @@ update_window :: proc(g: ^Game) {
 	sdl.UpdateWindowSurface(g.window)
 }
 
+
 main :: proc() {
 	g := Game{}
 	g.running = true
@@ -64,6 +68,13 @@ main :: proc() {
 	)
 	assert(g.window != nil, fmt.tprintf("Error creating window: %s", sdl.GetError()))
 	defer sdl.DestroyWindow(g.window)
+
+	init_audio(&g)
+	defer {
+		if g.audio_device_id != 0 {
+			sdl.CloseAudioDevice(g.audio_device_id)
+		}
+	}
 
 	resize_surface(&g)
 	update_window(&g)
@@ -88,6 +99,8 @@ main :: proc() {
 				#partial switch key {
 				case sdl.Keycode.ESCAPE:
 					fmt.println("ESCAPE")
+				case sdl.Keycode.SPACE:
+					g.audio_pause_on = audio_pause_device(g.audio_device_id, !g.audio_pause_on)
 				}
 			}
 		}
