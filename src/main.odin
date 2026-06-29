@@ -1,5 +1,6 @@
 package main
 
+import "base:intrinsics"
 import "core:fmt"
 import sdl "vendor:sdl2"
 
@@ -83,7 +84,14 @@ main :: proc() {
 	x_offset: i32 = 0
 	y_offset: i32 = 0
 
+	perf_count_frequency: u64 = sdl.GetPerformanceFrequency()
+
+	last_counter: u64 = sdl.GetPerformanceCounter()
+	last_cycle_count: i64 = intrinsics.read_cycle_counter()
+	fmt.printfln("%d", last_counter)
+
 	main_loop: for g.running {
+
 		for sdl.PollEvent(&event) {
 			#partial switch event.type {
 			case .QUIT:
@@ -122,5 +130,34 @@ main :: proc() {
 
 		render_weird_gradient(g.surface, x_offset, y_offset)
 		update_window(&g)
+
+		end_cycle_count := intrinsics.read_cycle_counter()
+		end_counter := sdl.GetPerformanceCounter()
+
+		// This is rdtsc (rough cpu cycle measure from cpu)
+		cycles_elapsed: i64 = end_cycle_count - last_cycle_count
+		// This is based on queryperformacnecounter - asks OS to the
+		// best of knowledge whats the wall clock time
+		counter_elapsed: u64 = end_counter - last_counter
+
+		// perf count frequency is the count per second so multiplying
+		// counter elapsed by 1000
+		// 3 ms = (1000 * 3360459) / 1000000000 .. the billion is the frequency
+		// so one count = one nanosecond
+		ms_per_frame: f32 = (1000.0 * f32(counter_elapsed)) / f32(perf_count_frequency)
+		fps: f32 = f32(perf_count_frequency) / f32(counter_elapsed)
+
+		mega_cycles_per_frame := cast(f32)cycles_elapsed / (1000 * 1000)
+
+		// ms/f   = milliseconds per frame
+		// f/s    = frames per second
+		// mc/f   = mega cycles per frame
+		fmt.printfln("%.2fms/f, %.2ff/s, %.2fmc/f", ms_per_frame, fps, mega_cycles_per_frame)
+
+		last_counter = end_counter
+		last_cycle_count = end_cycle_count
+
+		free_all(context.temp_allocator)
 	}
+
 }
