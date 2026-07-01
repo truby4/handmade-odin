@@ -1,6 +1,8 @@
 package handmade
 
-render_weird_gradient :: proc(buffer: ^game_offscreen_buffer, blue_offset, green_offset: i32) {
+import "core:math"
+
+render_weird_gradient :: proc(buffer: ^Game_offscreen_buffer, blue_offset, green_offset: i32) {
 	width := buffer.width
 	height := buffer.height
 	pitch := buffer.pitch
@@ -21,7 +23,32 @@ render_weird_gradient :: proc(buffer: ^game_offscreen_buffer, blue_offset, green
 	}
 }
 
+game_output_sound :: proc(buffer: ^Game_sound_output_buffer, tone_hz: i32) {
+	@(static) t_sine: f32
 
-game_update_and_render :: proc(buffer: ^game_offscreen_buffer, blue_offset, green_offset: i32) {
-	render_weird_gradient(buffer, blue_offset, green_offset)
+	tone_volume := i16(3000)
+	wave_period := buffer.samples_per_second / tone_hz
+
+	sample_out := buffer.samples
+
+	for sample_index in 0 ..< buffer.sample_count {
+		sine_value := math.sin(t_sine)
+		sample_value := i16(sine_value * f32(tone_volume))
+
+		sample_out[0] = sample_value
+		sample_out[1] = sample_value
+		sample_out = sample_out[2:]
+
+		t_sine += 2.0 * math.PI / f32(wave_period)
+	}
+}
+
+game_update_and_render :: proc(
+	offscreen_buffer: ^Game_offscreen_buffer,
+	blue_offset, green_offset: i32,
+	sound_buffer: ^Game_sound_output_buffer,
+	tone_hz: i32,
+) {
+	render_weird_gradient(offscreen_buffer, blue_offset, green_offset)
+	game_output_sound(sound_buffer, tone_hz)
 }

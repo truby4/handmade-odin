@@ -2,39 +2,34 @@ package handmade
 
 import "base:intrinsics"
 import "core:fmt"
-import "core:math"
 import sdl "vendor:sdl2"
 
 WINDOW_WIDTH :: 640
 WINDOW_HEIGHT :: 480
 
-// TODO(atruby) Rename to something more appropriate
-// "SDL_Platform?"
-Game :: struct {
-	running:         bool,
-	surface:         ^sdl.Surface,
-	window:          ^sdl.Window,
-	audio_device_id: sdl.AudioDeviceID,
-	audio_state:     Audio_State,
-	audio_pause_on:  bool,
+SDL_Platform :: struct {
+	running:           bool,
+	surface:           ^sdl.Surface,
+	window:            ^sdl.Window,
+	game_controller:   ^sdl.GameController,
+	using audio_state: Audio_State,
 }
 
-
-resize_surface :: proc(g: ^Game) {
-	g.surface = sdl.GetWindowSurface(g.window)
-	if g.surface == nil {
+resize_surface :: proc(s: ^SDL_Platform) {
+	s.surface = sdl.GetWindowSurface(s.window)
+	if s.surface == nil {
 		panic(fmt.tprintf("Error creating surface: %s", sdl.GetError()))
 	}
 }
 
-update_window :: proc(g: ^Game) {
-	sdl.UpdateWindowSurface(g.window)
+update_window :: proc(s: ^SDL_Platform) {
+	sdl.UpdateWindowSurface(s.window)
 }
 
 
 main :: proc() {
-	g := Game{}
-	g.running = true
+	s := SDL_Platform{}
+	s.running = true
 
 	assert(
 		sdl.Init(sdl.INIT_EVERYTHING) == 0,
@@ -42,7 +37,7 @@ main :: proc() {
 	)
 	defer sdl.Quit()
 
-	g.window = sdl.CreateWindow(
+	s.window = sdl.CreateWindow(
 		"Handmade Odin",
 		sdl.WINDOWPOS_CENTERED,
 		sdl.WINDOWPOS_CENTERED,
@@ -50,18 +45,30 @@ main :: proc() {
 		WINDOW_HEIGHT,
 		sdl.WINDOW_SHOWN | sdl.WINDOW_RESIZABLE,
 	)
-	assert(g.window != nil, fmt.tprintf("Error creating window: %s", sdl.GetError()))
-	defer sdl.DestroyWindow(g.window)
+	assert(s.window != nil, fmt.tprintf("Error creating window: %s", sdl.GetError()))
+	defer sdl.DestroyWindow(s.window)
 
-	init_audio(&g)
-	defer {
-		if g.audio_device_id != 0 {
-			sdl.CloseAudioDevice(g.audio_device_id)
+	num_joysticks := sdl.NumJoysticks()
+	for i in 0 ..< sdl.NumJoysticks() {
+		if sdl.IsGameController(i) {
+			game_controller := sdl.GameControllerOpen(i)
+			s.game_controller = game_controller
+			break
 		}
 	}
 
-	resize_surface(&g)
-	update_window(&g)
+	init_audio(&s)
+	defer {
+		if s.audio_device_id != 0 {
+			sdl.CloseAudioDevice(s.audio_device_id)
+		}
+	}
+
+	audio_samples := make([]i16, 48000 / 30 * 2)
+	defer delete(audio_samples)
+
+	resize_surface(&s)
+	update_window(&s)
 
 	event: sdl.Event
 	x_offset: i32 = 0
@@ -73,15 +80,15 @@ main :: proc() {
 	last_cycle_count: i64 = intrinsics.read_cycle_counter()
 	fmt.printfln("%d", last_counter)
 
-	main_loop: for g.running {
+	main_loop: for s.running {
 
 		for sdl.PollEvent(&event) {
 			#partial switch event.type {
 			case .QUIT:
-				g.running = false
+				s.running = false
 			case .WINDOWEVENT:
 				if event.window.event == sdl.WindowEventID.RESIZED {
-					resize_surface(&g)
+					resize_surface(&s)
 
 				}
 			case .KEYDOWN:
@@ -91,7 +98,7 @@ main :: proc() {
 				case sdl.Keycode.ESCAPE:
 					fmt.println("ESCAPE")
 				case sdl.Keycode.SPACE:
-					g.audio_pause_on = audio_pause_device(g.audio_device_id, !g.audio_pause_on)
+					s.audio_pause_on = audio_pause_device(s.audio_device_id, !s.audio_pause_on)
 				}
 			}
 		}
@@ -111,14 +118,34 @@ main :: proc() {
 			x_offset -= 2
 		}
 
-		buffer: game_offscreen_buffer
-		buffer.memory = g.surface.pixels
-		buffer.width = g.surface.w
-		buffer.height = g.surface.h
-		buffer.pitch = g.surface.pitch
+		if s.game_controller != nil {
+			stick_x := sdl.GameControllerGetAxis(s.game_controller, sdl.GameControllerAxis.LEFTX)
+			stick_y := sdl.GameControllerGetAxis(s.game_controller, sdl.GameControllerAxis.LEFTY)
 
-		game_update_and_render(&buffer, x_offset, y_offset)
-		update_window(&g)
+			x_offset += i32(stick_x) / 4096
+			y_offset += i32(stick_y) / 4096
+		}
+
+		sound_buffer := Game_sound_output_buffer {
+			samples_per_second = s.audio_state.samples_per_second,
+			sample_count       = s.audio_state.samples_per_second / 30,
+			samples            = raw_data(audio_samples),
+		}
+
+		buffer := Game_offscreen_buffer {
+			memory = s.surface.pixels,
+			width  = s.surface.w,
+			height = s.surface.h,
+			pitch  = s.surface.pitch,
+		}
+
+		game_update_and_render(&buffer, x_offset, y_offset, &sound_buffer, s.audio_state.tone_hz)
+
+		byte_count := sound_buffer.sample_count * 2 * size_of(i16)
+		sdl.QueueAudio(s.audio_device_id, rawptr(sound_buffer.samples), u32(byte_count))
+
+		update_window(&s)
+
 
 		end_cycle_count := intrinsics.read_cycle_counter()
 		end_counter := sdl.GetPerformanceCounter()
@@ -153,32 +180,28 @@ main :: proc() {
 
 
 Audio_State :: struct {
-	samples_per_second:      i32, // hz or per second
-	tone_hz:                 i32,
-	tone_volume:             i16,
-	running_sample_index:    u32,
-	square_wave_period:      i32,
-	half_square_wave_period: i32,
-	t_sine:                  f32,
+	samples_per_second:   i32, // hz or per second
+	tone_hz:              i32,
+	tone_volume:          i16,
+	running_sample_index: u32,
+	audio_pause_on:       bool,
+	audio_device_id:      sdl.AudioDeviceID,
 }
 
-init_audio :: proc(g: ^Game) {
+init_audio :: proc(g: ^SDL_Platform) {
 	g.audio_state = Audio_State {
 		samples_per_second   = 48000,
 		tone_hz              = 256,
 		tone_volume          = 3000,
 		running_sample_index = 0,
 	}
-	g.audio_state.square_wave_period = g.audio_state.samples_per_second / g.audio_state.tone_hz
-	g.audio_state.half_square_wave_period = g.audio_state.square_wave_period / 2
 
 	desired := sdl.AudioSpec {
 		freq     = g.audio_state.samples_per_second,
 		format   = sdl.AUDIO_S16,
 		channels = 2, /**< Number of channels: 1 mono, 2 stereo */
 		samples  = 1024,
-		callback = audio_callback,
-		userdata = &g.audio_state,
+		callback = nil,
 	}
 
 	obtained: sdl.AudioSpec
@@ -208,31 +231,11 @@ init_audio :: proc(g: ^Game) {
 }
 
 // returns new pause_on state to store in game
+// the pausing is overcomplicated !pause_on pause_on wtf.
 audio_pause_device :: proc(audio_device_id: sdl.AudioDeviceID, pause_on: bool) -> bool {
-	sdl.PauseAudioDevice(audio_device_id, sdl.bool(pause_on))
-	return pause_on
-}
-
-
-audio_callback :: proc "c" (userdata: rawptr, stream: [^]u8, len: i32) {
-	audio := cast(^Audio_State)userdata
-
-	bytes_per_sample := size_of(i16) * 2 // left + right
-	sample_count := len / cast(i32)bytes_per_sample
-
-	sample_out := cast([^]i16)stream
-
-	for sample_index in 0 ..< sample_count {
-
-		sine_value := math.sin(audio.t_sine)
-		sample_value := i16(sine_value * f32(audio.tone_volume))
-
-		audio.t_sine += (2.0 * math.PI) / f32(audio.square_wave_period)
-
-		sample_out[0] = sample_value // left
-		sample_out[1] = sample_value // right
-		sample_out = sample_out[2:]
-
-		audio.running_sample_index += 1
+	if audio_device_id != 0 {
+		sdl.PauseAudioDevice(audio_device_id, sdl.bool(pause_on))
+		return pause_on
 	}
+	return !pause_on
 }
