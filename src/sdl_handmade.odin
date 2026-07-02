@@ -8,29 +8,26 @@ import mix "vendor:sdl2/mixer"
 WINDOW_WIDTH :: 640
 WINDOW_HEIGHT :: 480
 
-SDL_Platform :: struct {
-	running:         bool,
-	surface:         ^sdl.Surface,
-	window:          ^sdl.Window,
-	game_controller: ^sdl.GameController,
-	music:           ^mix.Music,
+@(private = "file")
+Platform_SDL :: struct {
+	running:          bool,
+	surface:          ^sdl.Surface,
+	window:           ^sdl.Window,
+	game_controllers: [4]^sdl.GameController, // added 4 to be the max number of controllers? waste of memory?
+	music:            ^mix.Music,
 }
 
-resize_surface :: proc(s: ^SDL_Platform) {
-	s.surface = sdl.GetWindowSurface(s.window)
-	if s.surface == nil {
+@(private = "file")
+resize_surface :: proc(p: ^Platform_SDL) {
+	p.surface = sdl.GetWindowSurface(p.window)
+	if p.surface == nil {
 		panic(fmt.tprintf("Error creating surface: %s", sdl.GetError()))
 	}
 }
 
-update_window :: proc(s: ^SDL_Platform) {
-	sdl.UpdateWindowSurface(s.window)
-}
-
-
 main :: proc() {
-	s := SDL_Platform{}
-	s.running = true
+	p := Platform_SDL{}
+	p.running = true
 
 	assert(
 		sdl.Init(sdl.INIT_EVERYTHING) == 0,
@@ -38,7 +35,7 @@ main :: proc() {
 	)
 	defer sdl.Quit()
 
-	s.window = sdl.CreateWindow(
+	p.window = sdl.CreateWindow(
 		"Handmade Odin",
 		sdl.WINDOWPOS_CENTERED,
 		sdl.WINDOWPOS_CENTERED,
@@ -46,23 +43,24 @@ main :: proc() {
 		WINDOW_HEIGHT,
 		sdl.WINDOW_SHOWN | sdl.WINDOW_RESIZABLE,
 	)
-	assert(s.window != nil, fmt.tprintf("Error creating window: %s", sdl.GetError()))
-	defer sdl.DestroyWindow(s.window)
+	assert(p.window != nil, fmt.tprintf("Error creating window: %s", sdl.GetError()))
+	defer sdl.DestroyWindow(p.window)
 
 	num_joysticks := sdl.NumJoysticks()
-	for i in 0 ..< sdl.NumJoysticks() {
+	for i in 0 ..< i32(4) {
 		if sdl.IsGameController(i) {
 			game_controller := sdl.GameControllerOpen(i)
-			s.game_controller = game_controller
+			// just do first 4?
+			p.game_controllers[i] = game_controller
 			break
 		}
 	}
 
-	defer {
-		if s.game_controller != nil {
-			sdl.GameControllerClose(s.game_controller)
-		}
-	}
+	// defer {
+	// 	if p.game_controller != nil {
+	// 		sdl.GameControllerClose(p.game_controller)
+	// 	}
+	// }
 
 
 	if mix.OpenAudio(48000, sdl.AUDIO_S16SYS, 2, 1024) < 0 {
@@ -78,12 +76,15 @@ main :: proc() {
 
 	mix.PlayMusic(music, -1)
 
-	resize_surface(&s)
-	update_window(&s)
+	resize_surface(&p)
+	sdl.UpdateWindowSurface(p.window)
 
 	event: sdl.Event
-	x_offset: i32 = 0
-	y_offset: i32 = 0
+
+	// pointer swap shit for thee game inputs
+	input: [2]Game_input = {}
+	new_input: ^Game_input = &input[0]
+	old_input: ^Game_input = &input[1]
 
 	perf_count_frequency: u64 = sdl.GetPerformanceFrequency()
 
@@ -91,22 +92,26 @@ main :: proc() {
 	last_cycle_count: i64 = intrinsics.read_cycle_counter()
 	fmt.printfln("%d", last_counter)
 
-	main_loop: for s.running {
+	main_loop: for p.running {
+
+		@(static) frame := 0
+		frame += 1
+
 		for sdl.PollEvent(&event) {
 			#partial switch event.type {
 			case .QUIT:
-				s.running = false
+				p.running = false
 			case .WINDOWEVENT:
 				if event.window.event == sdl.WindowEventID.RESIZED {
-					resize_surface(&s)
-
+					resize_surface(&p)
 				}
 			case .KEYDOWN:
 				key := event.key.keysym.sym
 				#partial switch key {
 				case sdl.Keycode.ESCAPE:
-					s.running = false
+					p.running = false
 				case sdl.Keycode.SPACE:
+					fmt.printfln("Frame: %d, space button", frame)
 					if mix.PausedMusic() == 1 {
 						mix.ResumeMusic()
 					} else {
@@ -116,39 +121,72 @@ main :: proc() {
 			}
 		}
 
-		keys := sdl.GetKeyboardState(nil)
+		// keys := sdl.GetKeyboardState(nil)
 
-		if keys[int(sdl.SCANCODE_W)] != 0 {
-			y_offset += 2
-		}
-		if keys[int(sdl.SCANCODE_S)] != 0 {
-			y_offset -= 2
-		}
-		if keys[int(sdl.SCANCODE_A)] != 0 {
-			x_offset += 2
-		}
-		if keys[int(sdl.SCANCODE_D)] != 0 {
-			x_offset -= 2
-		}
+		// if keys[int(sdl.SCANCODE_W)] != 0 {
+		// 	fmt.printfln("Frame: %d, code: %d", frame, sdl.SCANCODE_W)
+		// 	// y_offset += 2
+		// }
+		// if keys[int(sdl.SCANCODE_S)] != 0 {
+		// 	// y_offset -= 2
+		// }
+		// if keys[int(sdl.SCANCODE_A)] != 0 {
+		// 	// x_offset += 2
+		// }
+		// if keys[int(sdl.SCANCODE_D)] != 0 {
+		// 	// x_offset -= 2
+		// }
 
-		if s.game_controller != nil {
-			stick_x := sdl.GameControllerGetAxis(s.game_controller, sdl.GameControllerAxis.LEFTX)
-			stick_y := sdl.GameControllerGetAxis(s.game_controller, sdl.GameControllerAxis.LEFTY)
+		for v, i in p.game_controllers {
 
-			x_offset += i32(stick_x) / 4096
-			y_offset += i32(stick_y) / 4096
+			old_controller: ^Game_controller_input = &old_input.Controllers[i]
+			new_controller: ^Game_controller_input = &new_input.Controllers[i]
+
+			// the way im trying to copy from casey, this will mean
+			// even if controller is plugged in and not being used it will still
+			// be considered analog?
+			new_controller.is_analog = true
+			new_controller.start_x = old_controller.end_x
+			new_controller.start_y = old_controller.end_y
+
+			left_thumb_x := sdl.GameControllerGetAxis(v, sdl.GameControllerAxis.LEFTX)
+			x: f32
+			if left_thumb_x > 0 {
+				x = cast(f32)left_thumb_x / 32768
+			} else {
+				x = cast(f32)left_thumb_x / 32767
+			}
+			new_controller.min_x = x
+			new_controller.max_x = x
+			new_controller.end_x = x
+
+
+			left_thumb_y := sdl.GameControllerGetAxis(v, sdl.GameControllerAxis.LEFTY)
+			y: f32
+			if left_thumb_y > 0 {
+				y = cast(f32)left_thumb_x / 32768
+			} else {
+				y = cast(f32)left_thumb_y / 32767
+			}
+			new_controller.min_y = y
+			new_controller.max_y = y
+			new_controller.end_y = y
+
+			// returns 1 for pressed, 0 for not
+			down := sdl.GameControllerGetButton(v, sdl.GameControllerButton.DPAD_DOWN)
+			process_button_press(&old_controller.Down, &new_controller.Down, down)
 		}
 
 		buffer := Game_offscreen_buffer {
-			memory = s.surface.pixels,
-			width  = s.surface.w,
-			height = s.surface.h,
-			pitch  = s.surface.pitch,
+			memory = p.surface.pixels,
+			width  = p.surface.w,
+			height = p.surface.h,
+			pitch  = p.surface.pitch,
 		}
 
-		game_update_and_render(&buffer, x_offset, y_offset)
+		game_update_and_render(new_input, &buffer)
 
-		update_window(&s)
+		sdl.UpdateWindowSurface(p.window)
 
 		end_cycle_count := intrinsics.read_cycle_counter()
 		end_counter := sdl.GetPerformanceCounter()
@@ -164,7 +202,21 @@ main :: proc() {
 		last_counter = end_counter
 		last_cycle_count = end_cycle_count
 
+		temp := new_input
+		new_input = old_input
+		old_input = temp
+
 		free_all(context.temp_allocator)
 	}
 
+}
+
+@(private = "file")
+process_button_press :: proc(
+	old_state: ^Game_button_state,
+	new_state: ^Game_button_state,
+	pressed: u8,
+) {
+	new_state.ended_down = pressed == 1
+	new_state.half_transition_count = old_state.ended_down != new_state.ended_down ? 1 : 0
 }
