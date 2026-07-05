@@ -32,14 +32,6 @@ Platform_SDL :: struct {
 	music:            ^mix.Music,
 }
 
-@(private = "file")
-resize_surface :: proc(p: ^Platform_SDL) {
-	p.surface = sdl.GetWindowSurface(p.window)
-	if p.surface == nil {
-		panic(fmt.tprintf("Error creating surface: %s", sdl.GetError()))
-	}
-}
-
 main :: proc() {
 	config: Config
 	flags.parse_or_exit(&config, os.args)
@@ -251,7 +243,7 @@ main :: proc() {
 
 }
 
-@(private = "file")
+@(private = "file") // this tag blocks from being found in zed (ctrl+t)
 process_button_press :: proc(
 	old_state: ^Game_button_state,
 	new_state: ^Game_button_state,
@@ -259,4 +251,39 @@ process_button_press :: proc(
 ) {
 	new_state.ended_down = pressed == 1
 	new_state.half_transition_count = old_state.ended_down != new_state.ended_down ? 1 : 0
+}
+
+resize_surface :: proc(p: ^Platform_SDL) {
+	p.surface = sdl.GetWindowSurface(p.window)
+	if p.surface == nil {
+		panic(fmt.tprintf("Error creating surface: %s", sdl.GetError()))
+	}
+}
+
+debug_platform_read_entire_file :: proc(path: string) -> (Debug_read_file_result, bool) {
+	result: Debug_read_file_result
+
+	if data, data_err := os.read_entire_file(path, context.allocator); data_err == nil {
+		result.size = cast(u32)len(data)
+		result.contents = raw_data(data)
+	} else {
+		fmt.eprintfln("Failed reading from '%s'. Error: %v", path, data_err)
+		return result, false
+	}
+
+	return result, true
+}
+
+debug_platform_write_entire_file :: proc(dst: string, filesize: u32, contents: rawptr) {
+	bytes := ([^]byte)(contents)[:filesize]
+
+	write_err := os.write_entire_file(dst, bytes)
+
+	if write_err != nil {
+		fmt.eprintfln("Failed writing '%s'. Error: %v", dst, write_err)
+	}
+}
+
+debug_platform_free_file_memory :: proc(memory: rawptr) {
+	free(memory)
 }

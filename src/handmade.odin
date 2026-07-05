@@ -1,5 +1,7 @@
 package handmade
 
+import "core:fmt"
+
 Game_offscreen_buffer :: struct {
 	memory:               rawptr,
 	width, height, pitch: i32,
@@ -50,6 +52,11 @@ Game_state :: struct {
 	blue_offset:  i32,
 }
 
+Debug_read_file_result :: struct {
+	size:     u32,
+	contents: rawptr,
+}
+
 render_weird_gradient :: proc(buffer: ^Game_offscreen_buffer, blue_offset, green_offset: i32) {
 	width := buffer.width
 	height := buffer.height
@@ -80,6 +87,15 @@ game_update_and_render :: proc(
 
 	game_state := cast(^Game_state)memory.permanent_storage
 	if !memory.is_initialised {
+
+		filename := "src/data/test.txt"
+
+		file, ok := debug_platform_read_entire_file(filename)
+		if ok {
+			defer debug_platform_free_file_memory(file.contents)
+			debug_platform_write_entire_file("src/data/test.out", file.size, file.contents)
+		}
+
 		// should already be 0 tbh.
 		game_state.blue_offset = 0
 		// TODO(atruby): Casey says could be more appropraite to do in platform layer?
