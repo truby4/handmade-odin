@@ -4,4 +4,4 @@
 # mkdir -p bin
 # odin build src -out:build/handmade
 mkdir -p build
-odin run src -out:build/handmade
+odin run src -out:build/handmade -- -internal:true -slow-build:true

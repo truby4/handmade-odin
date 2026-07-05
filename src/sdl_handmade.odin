@@ -1,12 +1,27 @@
 package handmade
 
 import "base:intrinsics"
+import "core:flags"
 import "core:fmt"
+import "core:mem/virtual"
+import "core:os"
+
 import sdl "vendor:sdl2"
 import mix "vendor:sdl2/mixer"
 
 WINDOW_WIDTH :: 640
 WINDOW_HEIGHT :: 480
+
+Kilobytes :: #force_inline proc(value: u64) -> u64 {return value * 1024}
+Megabytes :: #force_inline proc(value: u64) -> u64 {return Kilobytes(value) * 1024}
+Gigabytes :: #force_inline proc(value: u64) -> u64 {return Megabytes(value) * 1024}
+Terabytes :: #force_inline proc(value: u64) -> u64 {return Gigabytes(value) * 1024}
+
+@(private = "file")
+Config :: struct {
+	internal:   bool `args:"name=internal"`,
+	slow_build: bool `args:"name=slow-build"`,
+}
 
 @(private = "file")
 Platform_SDL :: struct {
@@ -26,13 +41,46 @@ resize_surface :: proc(p: ^Platform_SDL) {
 }
 
 main :: proc() {
+	config: Config
+	flags.parse_or_exit(&config, os.args)
+
 	p := Platform_SDL{}
 	p.running = true
+
+	base_address: uintptr
+
+	if config.internal {
+		base_address = cast(uintptr)Terabytes(2)
+	} else {
+		base_address = 0
+	}
+
+	game_memory: Game_memory
+	game_memory.permanent_storage_size = Megabytes(64)
+	game_memory.transient_storage_size = Gigabytes(4)
+	total_size: u64 = game_memory.permanent_storage_size + game_memory.transient_storage_size
+	reserved_block, err := virtual.reserve(uint(total_size), base_address)
+	assert(err == nil, "Virtual reserve error")
+
+	err = virtual.commit(raw_data(reserved_block), uint(total_size))
+	assert(err == nil, "Virtual commit error")
+
+	game_memory.permanent_storage = raw_data(reserved_block)
+	game_memory.transient_storage = rawptr(
+		uintptr(game_memory.permanent_storage) + uintptr(game_memory.permanent_storage_size),
+	)
+
+	fmt.printfln(
+		"Game memory initialised:\nPerm Storage Address: %p\nTransient Storage: %p",
+		game_memory.permanent_storage,
+		game_memory.transient_storage,
+	)
 
 	assert(
 		sdl.Init(sdl.INIT_EVERYTHING) == 0,
 		fmt.tprintf("Error initialising sdl: %s", sdl.GetError()),
 	)
+
 	defer sdl.Quit()
 
 	p.window = sdl.CreateWindow(
@@ -55,13 +103,6 @@ main :: proc() {
 			break
 		}
 	}
-
-	// defer {
-	// 	if p.game_controller != nil {
-	// 		sdl.GameControllerClose(p.game_controller)
-	// 	}
-	// }
-
 
 	if mix.OpenAudio(48000, sdl.AUDIO_S16SYS, 2, 1024) < 0 {
 		fmt.printfln("Mixer error: %s", mix.GetError())
@@ -90,7 +131,6 @@ main :: proc() {
 
 	last_counter: u64 = sdl.GetPerformanceCounter()
 	last_cycle_count: i64 = intrinsics.read_cycle_counter()
-	fmt.printfln("%d", last_counter)
 
 	main_loop: for p.running {
 
@@ -184,7 +224,7 @@ main :: proc() {
 			pitch  = p.surface.pitch,
 		}
 
-		game_update_and_render(new_input, &buffer)
+		game_update_and_render(&game_memory, new_input, &buffer)
 
 		sdl.UpdateWindowSurface(p.window)
 

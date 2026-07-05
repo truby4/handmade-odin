@@ -37,6 +37,19 @@ Game_input :: struct {
 	Controllers: [4]Game_controller_input,
 }
 
+Game_memory :: struct {
+	is_initialised:         bool,
+	permanent_storage_size: u64,
+	permanent_storage:      rawptr,
+	transient_storage_size: u64,
+	transient_storage:      rawptr,
+}
+
+Game_state :: struct {
+	green_offset: i32,
+	blue_offset:  i32,
+}
+
 render_weird_gradient :: proc(buffer: ^Game_offscreen_buffer, blue_offset, green_offset: i32) {
 	width := buffer.width
 	height := buffer.height
@@ -58,15 +71,26 @@ render_weird_gradient :: proc(buffer: ^Game_offscreen_buffer, blue_offset, green
 	}
 }
 
-game_update_and_render :: proc(input: ^Game_input, offscreen_buffer: ^Game_offscreen_buffer) {
-	@(static) blue_offset: i32 = 0
-	@(static) green_offset: i32 = 0
+game_update_and_render :: proc(
+	memory: ^Game_memory,
+	input: ^Game_input,
+	offscreen_buffer: ^Game_offscreen_buffer,
+) {
+	assert(size_of(Game_state) <= memory.permanent_storage_size)
+
+	game_state := cast(^Game_state)memory.permanent_storage
+	if !memory.is_initialised {
+		// should already be 0 tbh.
+		game_state.blue_offset = 0
+		// TODO(atruby): Casey says could be more appropraite to do in platform layer?
+		memory.is_initialised = true
+	}
 
 	input0: ^Game_controller_input = &input.Controllers[0]
 
 	if input0.is_analog {
 		// Use analog movement tuning
-		blue_offset += i32(4.0 * (input0.end_x))
+		game_state.blue_offset += i32(4.0 * (input0.end_x))
 	} else {
 		// Use digital movement tuning
 	}
@@ -74,8 +98,8 @@ game_update_and_render :: proc(input: ^Game_input, offscreen_buffer: ^Game_offsc
 	// Input.AButtonEndedDown;
 	// Input.AButtonHalfTransitionCount;
 	if input0.Down.ended_down {
-		green_offset += 1
+		game_state.green_offset += 1
 	}
 
-	render_weird_gradient(offscreen_buffer, blue_offset, green_offset)
+	render_weird_gradient(offscreen_buffer, game_state.blue_offset, game_state.green_offset)
 }
