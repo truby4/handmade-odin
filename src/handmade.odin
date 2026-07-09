@@ -13,30 +13,38 @@ Game_button_state :: struct {
 }
 
 Game_controller_input :: struct {
-	is_analog: bool,
-	start_x:   f32,
-	start_y:   f32,
-	min_x:     f32,
-	min_y:     f32,
-	max_x:     f32,
-	max_y:     f32,
-	end_x:     f32,
-	end_y:     f32,
-	using _:   struct #raw_union {
-		Buttons: [6]Game_button_state,
+	is_connected: bool,
+	is_analog:    bool,
+	stick_avg_x:  f32,
+	stick_avg_y:  f32,
+	using _:      struct #raw_union {
+		Buttons: [10]Game_button_state,
 		using _: struct {
-			Up:             Game_button_state,
-			Down:           Game_button_state,
-			Left:           Game_button_state,
-			Right:          Game_button_state,
+			Move_up:        Game_button_state,
+			Move_down:      Game_button_state,
+			Move_left:      Game_button_state,
+			Move_right:     Game_button_state,
+			Action_up:      Game_button_state,
+			Action_down:    Game_button_state,
+			Action_left:    Game_button_state,
+			Action_right:   Game_button_state,
 			Left_Shoulder:  Game_button_state,
 			Right_Shoulder: Game_button_state,
+			Start:          Game_button_state,
+			Back:           Game_button_state,
 		},
 	},
 }
 
 Game_input :: struct {
-	Controllers: [4]Game_controller_input,
+	Controllers: [5]Game_controller_input,
+}
+
+// To make sure dont access indexes which dont exist?
+// better to gracefully handle it?
+Get_controller :: proc(input: ^Game_input, index: int) -> ^Game_controller_input {
+	assert(index < len(input.Controllers))
+	return &input.Controllers[index]
 }
 
 Game_memory :: struct {
@@ -101,20 +109,23 @@ game_update_and_render :: proc(
 		// TODO(atruby): Casey says could be more appropraite to do in platform layer?
 		memory.is_initialised = true
 	}
+	for v in input.Controllers {
+		if v.is_analog {
+			// Use analog movement tuning
+			game_state.blue_offset += i32(6.0 * (v.stick_avg_x))
+			game_state.green_offset += i32(6.0 * (v.stick_avg_y))
+		} else {
+			// Use digital movement tuning
+			if (v.Move_left.ended_down) {
+				game_state.blue_offset += 4
+			}
+		}
 
-	input0: ^Game_controller_input = &input.Controllers[0]
-
-	if input0.is_analog {
-		// Use analog movement tuning
-		game_state.blue_offset += i32(4.0 * (input0.end_x))
-	} else {
-		// Use digital movement tuning
-	}
-
-	// Input.AButtonEndedDown;
-	// Input.AButtonHalfTransitionCount;
-	if input0.Down.ended_down {
-		game_state.green_offset += 1
+		// Input.AButtonEndedDown;
+		// Input.AButtonHalfTransitionCount;
+		if v.Action_down.ended_down {
+			game_state.green_offset += 4
+		}
 	}
 
 	render_weird_gradient(offscreen_buffer, game_state.blue_offset, game_state.green_offset)

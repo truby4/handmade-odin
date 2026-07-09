@@ -5,6 +5,7 @@ import "core:flags"
 import "core:fmt"
 import "core:mem/virtual"
 import "core:os"
+import "core:slice/heap"
 
 import sdl "vendor:sdl2"
 import mix "vendor:sdl2/mixer"
@@ -31,6 +32,8 @@ Platform_SDL :: struct {
 	game_controllers: [4]^sdl.GameController, // added 4 to be the max number of controllers? waste of memory?
 	music:            ^mix.Music,
 }
+
+global_pause := false
 
 main :: proc() {
 	config: Config
@@ -75,6 +78,11 @@ main :: proc() {
 
 	defer sdl.Quit()
 
+	// TODO(atruby): How do we reliably query refreshrate in SDL?
+	monitor_refresh_hz := 60
+	game_update_hz := monitor_refresh_hz
+	target_seconds_per_frame := 1.0 / cast(f32)game_update_hz
+
 	p.window = sdl.CreateWindow(
 		"Handmade Odin",
 		sdl.WINDOWPOS_CENTERED,
@@ -92,7 +100,6 @@ main :: proc() {
 			game_controller := sdl.GameControllerOpen(i)
 			// just do first 4?
 			p.game_controllers[i] = game_controller
-			break
 		}
 	}
 
@@ -125,10 +132,6 @@ main :: proc() {
 	last_cycle_count: i64 = intrinsics.read_cycle_counter()
 
 	main_loop: for p.running {
-
-		@(static) frame := 0
-		frame += 1
-
 		for sdl.PollEvent(&event) {
 			#partial switch event.type {
 			case .QUIT:
@@ -142,8 +145,8 @@ main :: proc() {
 				#partial switch key {
 				case sdl.Keycode.ESCAPE:
 					p.running = false
-				case sdl.Keycode.SPACE:
-					fmt.printfln("Frame: %d, space button", frame)
+				case sdl.Keycode.P:
+					global_pause = !global_pause
 					if mix.PausedMusic() == 1 {
 						mix.ResumeMusic()
 					} else {
@@ -152,105 +155,319 @@ main :: proc() {
 				}
 			}
 		}
+		if (!global_pause) {
 
-		// keys := sdl.GetKeyboardState(nil)
+			@(static) frame := 0
+			frame += 1
 
-		// if keys[int(sdl.SCANCODE_W)] != 0 {
-		// 	fmt.printfln("Frame: %d, code: %d", frame, sdl.SCANCODE_W)
-		// 	// y_offset += 2
-		// }
-		// if keys[int(sdl.SCANCODE_S)] != 0 {
-		// 	// y_offset -= 2
-		// }
-		// if keys[int(sdl.SCANCODE_A)] != 0 {
-		// 	// x_offset += 2
-		// }
-		// if keys[int(sdl.SCANCODE_D)] != 0 {
-		// 	// x_offset -= 2
-		// }
 
-		for v, i in p.game_controllers {
+			old_keyboard_controller: ^Game_controller_input = Get_controller(old_input, 0)
+			new_keyboard_controller: ^Game_controller_input = Get_controller(new_input, 0)
+			reset_controller_input(old_keyboard_controller, new_keyboard_controller)
+			new_keyboard_controller.is_connected = true
 
-			old_controller: ^Game_controller_input = &old_input.Controllers[i]
-			new_controller: ^Game_controller_input = &new_input.Controllers[i]
+			keys := sdl.GetKeyboardState(nil)
+			process_keyboard_input(old_keyboard_controller, new_keyboard_controller, keys)
 
-			// the way im trying to copy from casey, this will mean
-			// even if controller is plugged in and not being used it will still
-			// be considered analog?
-			new_controller.is_analog = true
-			new_controller.start_x = old_controller.end_x
-			new_controller.start_y = old_controller.end_y
+			for v, i in p.game_controllers {
+				if v == nil {
+					continue
+				}
+				// adjusts index so that the 0 index can be the keyboard
+				old_controller: ^Game_controller_input = Get_controller(old_input, i + 1)
+				new_controller: ^Game_controller_input = Get_controller(new_input, i + 1)
+				reset_controller_input(old_controller, new_controller)
 
-			left_thumb_x := sdl.GameControllerGetAxis(v, sdl.GameControllerAxis.LEFTX)
-			x: f32
-			if left_thumb_x > 0 {
-				x = cast(f32)left_thumb_x / 32768
-			} else {
-				x = cast(f32)left_thumb_x / 32767
+				if !sdl.GameControllerGetAttached(v) {
+					new_controller.is_connected = false
+					fmt.println("Game controller disconnected")
+					continue
+				}
+
+				// the way im trying to copy from casey, this will mean
+				// even if controller is plugged in and not being used it will still
+				// be considered analog?
+				new_controller.is_analog = true
+				new_controller.is_connected = true
+
+				LEFT_THUMB_DEADZONE :: 7849
+
+				left_thumb_x := sdl.GameControllerGetAxis(v, sdl.GameControllerAxis.LEFTX)
+				new_controller.stick_avg_x = process_controller_axis_value(
+					left_thumb_x,
+					LEFT_THUMB_DEADZONE,
+				)
+
+				left_thumb_y := sdl.GameControllerGetAxis(v, sdl.GameControllerAxis.LEFTY)
+				new_controller.stick_avg_y = process_controller_axis_value(
+					left_thumb_y,
+					LEFT_THUMB_DEADZONE,
+				)
+
+				dpad_down := sdl.GameControllerGetButton(v, sdl.GameControllerButton.DPAD_DOWN)
+				dpad_up := sdl.GameControllerGetButton(v, sdl.GameControllerButton.DPAD_UP)
+				dpad_left := sdl.GameControllerGetButton(v, sdl.GameControllerButton.DPAD_LEFT)
+				dpad_right := sdl.GameControllerGetButton(v, sdl.GameControllerButton.DPAD_RIGHT)
+
+				if dpad_down == 1 {
+					new_controller.stick_avg_y = -1
+				}
+				if dpad_up == 1 {
+					new_controller.stick_avg_y = 1
+				}
+				if dpad_left == 1 {
+					new_controller.stick_avg_x = -1
+				}
+				if dpad_right == 1 {
+					new_controller.stick_avg_x = 1
+				}
+
+				threshold: f32 = 0.5
+				process_controller_button_press(
+					&old_controller.Move_left,
+					&new_controller.Move_left,
+					new_controller.stick_avg_x < -threshold ? 1 : 0,
+				)
+				process_controller_button_press(
+					&old_controller.Move_right,
+					&new_controller.Move_right,
+					new_controller.stick_avg_x > threshold ? 1 : 0,
+				)
+				process_controller_button_press(
+					&old_controller.Move_down,
+					&new_controller.Move_down,
+					new_controller.stick_avg_y < -threshold ? 1 : 0,
+				)
+				process_controller_button_press(
+					&old_controller.Move_up,
+					&new_controller.Move_up,
+					new_controller.stick_avg_y > threshold ? 1 : 0,
+				)
+
+				// returns 1 for pressed, 0 for not
+				down := sdl.GameControllerGetButton(v, sdl.GameControllerButton.A)
+				process_controller_button_press(
+					&old_controller.Action_down,
+					&new_controller.Action_down,
+					down,
+				)
+
+				right := sdl.GameControllerGetButton(v, sdl.GameControllerButton.B)
+				process_controller_button_press(
+					&old_controller.Action_right,
+					&new_controller.Action_right,
+					right,
+				)
+
+				left := sdl.GameControllerGetButton(v, sdl.GameControllerButton.X)
+				process_controller_button_press(
+					&old_controller.Action_left,
+					&new_controller.Action_left,
+					left,
+				)
+
+				up := sdl.GameControllerGetButton(v, sdl.GameControllerButton.Y)
+				process_controller_button_press(
+					&old_controller.Action_up,
+					&new_controller.Action_up,
+					up,
+				)
+
+				start := sdl.GameControllerGetButton(v, sdl.GameControllerButton.START)
+				process_controller_button_press(
+					&old_controller.Start,
+					&new_controller.Start,
+					start,
+				)
+
+				back := sdl.GameControllerGetButton(v, sdl.GameControllerButton.BACK)
+				process_controller_button_press(&old_controller.Back, &new_controller.Back, back)
 			}
-			new_controller.min_x = x
-			new_controller.max_x = x
-			new_controller.end_x = x
 
-
-			left_thumb_y := sdl.GameControllerGetAxis(v, sdl.GameControllerAxis.LEFTY)
-			y: f32
-			if left_thumb_y > 0 {
-				y = cast(f32)left_thumb_x / 32768
-			} else {
-				y = cast(f32)left_thumb_y / 32767
+			buffer := Game_offscreen_buffer {
+				memory = p.surface.pixels,
+				width  = p.surface.w,
+				height = p.surface.h,
+				pitch  = p.surface.pitch,
 			}
-			new_controller.min_y = y
-			new_controller.max_y = y
-			new_controller.end_y = y
 
-			// returns 1 for pressed, 0 for not
-			down := sdl.GameControllerGetButton(v, sdl.GameControllerButton.DPAD_DOWN)
-			process_button_press(&old_controller.Down, &new_controller.Down, down)
+			game_update_and_render(&game_memory, new_input, &buffer)
+
+			if keys[sdl.SCANCODE_O] == 1 {
+				debug_draw_vertical(&buffer, 100, 0, buffer.height, 0xFFFFFFFF)
+			}
+
+			// All work done, now measure how long its been
+			work_seconds_elapsed: f32 = get_seconds_elapsed(
+				last_counter,
+				sdl.GetPerformanceCounter(),
+				perf_count_frequency,
+			)
+
+			// Check if time passed matches target, if not delay for the remainder?
+			seconds_elapsed_for_frame: f32 = work_seconds_elapsed
+			if seconds_elapsed_for_frame < target_seconds_per_frame {
+				sleep_ms := cast(u32)(1000.0 *
+					(target_seconds_per_frame - seconds_elapsed_for_frame))
+				if sleep_ms > 1 {
+					sdl.Delay(sleep_ms - 1)
+				}
+
+				// case it under/overshoots, impl own "delay"
+				for seconds_elapsed_for_frame < target_seconds_per_frame {
+					seconds_elapsed_for_frame = get_seconds_elapsed(
+						last_counter,
+						sdl.GetPerformanceCounter(),
+						perf_count_frequency,
+					)
+				}
+			}
+
+			// input swap
+			temp := new_input
+			new_input = old_input
+			old_input = temp
+
+
+			// roughly how many cpu cycles how elapsed
+			end_cycle_count := intrinsics.read_cycle_counter()
+			cycles_elapsed := end_cycle_count - last_cycle_count
+			last_cycle_count = end_cycle_count
+
+			// "wall clock" timer from os
+			// how much real time passed
+			end_counter := sdl.GetPerformanceCounter()
+			counter_elapsed := end_counter - last_counter
+			last_counter = end_counter
+
+			mega_cycles_per_frame := f32(cycles_elapsed) / (1000 * 1000)
+			ms_per_frame := (1000.0 * f32(counter_elapsed)) / f32(perf_count_frequency)
+			fps := f32(perf_count_frequency) / f32(counter_elapsed)
+
+			if frame % 60 == 0 {
+				fmt.printfln(
+					"%.2fms/f, %.2ff/s, %.2fmc/f",
+					ms_per_frame,
+					fps,
+					mega_cycles_per_frame,
+				)
+			}
+			sdl.UpdateWindowSurface(p.window)
+			free_all(context.temp_allocator)
 		}
-
-		buffer := Game_offscreen_buffer {
-			memory = p.surface.pixels,
-			width  = p.surface.w,
-			height = p.surface.h,
-			pitch  = p.surface.pitch,
-		}
-
-		game_update_and_render(&game_memory, new_input, &buffer)
-
-		sdl.UpdateWindowSurface(p.window)
-
-		end_cycle_count := intrinsics.read_cycle_counter()
-		end_counter := sdl.GetPerformanceCounter()
-
-		cycles_elapsed: i64 = end_cycle_count - last_cycle_count
-		counter_elapsed: u64 = end_counter - last_counter
-
-		ms_per_frame: f32 = (1000.0 * f32(counter_elapsed)) / f32(perf_count_frequency)
-		fps: f32 = f32(perf_count_frequency) / f32(counter_elapsed)
-
-		mega_cycles_per_frame := cast(f32)cycles_elapsed / (1000 * 1000)
-
-		last_counter = end_counter
-		last_cycle_count = end_cycle_count
-
-		temp := new_input
-		new_input = old_input
-		old_input = temp
-
-		free_all(context.temp_allocator)
 	}
-
 }
 
-@(private = "file") // this tag blocks from being found in zed (ctrl+t)
-process_button_press :: proc(
+get_wall_clock :: proc() -> u64 {
+	return sdl.GetPerformanceCounter()
+}
+
+get_seconds_elapsed :: proc(start, end, perf_count_frequency: u64) -> f32 {
+	counter_elapsed := end - start
+	result := ((f32(counter_elapsed)) / f32(perf_count_frequency))
+	return result
+}
+
+process_controller_axis_value :: proc(v, deadzone: i16) -> (result: f32) {
+	value := f32(v)
+	deadzone_f := f32(deadzone)
+
+	if v < -deadzone {
+		result = (value + deadzone_f) / (32768.0 - deadzone_f)
+	} else if v > deadzone {
+		result = (value - deadzone_f) / (32767.0 - deadzone_f)
+	}
+
+	return
+}
+
+
+reset_controller_input :: proc(old_controller, new_controller: ^Game_controller_input) {
+	previous_buttons := old_controller.Buttons
+
+	new_controller^ = {}
+
+	new_controller.is_connected = old_controller.is_connected
+
+	for button, index in previous_buttons {
+		new_controller.Buttons[index].ended_down = button.ended_down
+	}
+}
+
+// @(private = "file") // this tag blocks from being found in zed (ctrl+t)
+process_controller_button_press :: proc(
 	old_state: ^Game_button_state,
 	new_state: ^Game_button_state,
 	pressed: u8,
 ) {
 	new_state.ended_down = pressed == 1
 	new_state.half_transition_count = old_state.ended_down != new_state.ended_down ? 1 : 0
+}
+
+process_keyboard_input :: proc(
+	old_controller: ^Game_controller_input,
+	new_controller: ^Game_controller_input,
+	keys: [^]u8,
+) {
+	process_controller_button_press(
+		&old_controller.Move_down,
+		&new_controller.Move_down,
+		keys[sdl.SCANCODE_S],
+	)
+
+	process_controller_button_press(
+		&old_controller.Move_up,
+		&new_controller.Move_up,
+		keys[sdl.SCANCODE_W],
+	)
+
+	process_controller_button_press(
+		&old_controller.Move_left,
+		&new_controller.Move_left,
+		keys[sdl.SCANCODE_A],
+	)
+
+	process_controller_button_press(
+		&old_controller.Move_right,
+		&new_controller.Move_right,
+		keys[sdl.SCANCODE_D],
+	)
+
+	process_controller_button_press(
+		&old_controller.Action_down,
+		&new_controller.Action_down,
+		keys[sdl.SCANCODE_DOWN],
+	)
+
+	process_controller_button_press(
+		&old_controller.Action_up,
+		&new_controller.Action_up,
+		keys[sdl.SCANCODE_UP],
+	)
+
+	process_controller_button_press(
+		&old_controller.Action_left,
+		&new_controller.Action_left,
+		keys[sdl.SCANCODE_LEFT],
+	)
+
+	process_controller_button_press(
+		&old_controller.Action_right,
+		&new_controller.Action_right,
+		keys[sdl.SCANCODE_RIGHT],
+	)
+
+	process_controller_button_press(
+		&old_controller.Left_Shoulder,
+		&new_controller.Left_Shoulder,
+		keys[sdl.SCANCODE_Q],
+	)
+
+	process_controller_button_press(
+		&old_controller.Right_Shoulder,
+		&new_controller.Right_Shoulder,
+		keys[sdl.SCANCODE_E],
+	)
 }
 
 resize_surface :: proc(p: ^Platform_SDL) {
@@ -286,4 +503,39 @@ debug_platform_write_entire_file :: proc(dst: string, filesize: u32, contents: r
 
 debug_platform_free_file_memory :: proc(memory: rawptr) {
 	free(memory)
+}
+
+
+debug_draw_vertical :: proc(buffer: ^Game_offscreen_buffer, x, top, bottom: i32, color: u32) {
+	if x < 0 || x >= buffer.width {
+		return
+	}
+
+	top_clamped := top
+	bottom_clamped := bottom
+
+	if top_clamped < 0 {
+		top_clamped = 0
+	}
+
+	if bottom_clamped > buffer.height {
+		bottom_clamped = buffer.height
+	}
+
+	pixel := ([^]u8)(buffer.memory)
+	fmt.printfln("%v", pixel)
+	// next pixel
+	// +1 byte  = next color aka. part of the same pixel
+	// +4 bytes = next whole pixel (assuming start from the beginning of pixel)
+	addr := ([^]u8)(uintptr(pixel) + 4)
+	value := (^u32)(addr)^
+	fmt.printfln("addr: %p, pixel: 0x%08X", addr, value)
+	fmt.printfln("color: 0x%08X", color)
+	pixel = ([^]u8)(uintptr(pixel) + uintptr(x * 4 + top_clamped * buffer.pitch))
+
+	for y in top_clamped ..< bottom_clamped {
+		(^u32)(pixel)^ = color
+		pixel = ([^]u8)(uintptr(pixel) + uintptr(buffer.pitch))
+
+	}
 }
