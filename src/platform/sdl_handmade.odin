@@ -1,14 +1,14 @@
-package handmade
+package platform
 
 import "base:intrinsics"
+import "base:runtime"
 import "core:flags"
 import "core:fmt"
 import "core:mem/virtual"
 import "core:os"
-import "core:slice/heap"
-
 import sdl "vendor:sdl2"
 import mix "vendor:sdl2/mixer"
+import api "../shared"
 
 WINDOW_WIDTH :: 640
 WINDOW_HEIGHT :: 480
@@ -50,9 +50,12 @@ main :: proc() {
 		base_address = 0
 	}
 
-	game_memory: Game_memory
+	game_memory: api.Game_memory
 	game_memory.permanent_storage_size = Megabytes(64)
 	game_memory.transient_storage_size = Gigabytes(4)
+	game_memory.debug_platform_read_entire_file = debug_platform_read_entire_file
+	game_memory.debug_platform_write_entire_file = debug_platform_write_entire_file
+	game_memory.debug_platform_free_file_memory = debug_platform_free_file_memory
 	total_size: u64 = game_memory.permanent_storage_size + game_memory.transient_storage_size
 	reserved_block, err := virtual.reserve(uint(total_size), base_address)
 	assert(err == nil, "Virtual reserve error")
@@ -70,6 +73,15 @@ main :: proc() {
 		game_memory.permanent_storage,
 		game_memory.transient_storage,
 	)
+
+	game_code_load_counter := 0
+	game_code, ok := load_game_code("build/libhandmade.so", "build/libhandmade_temp.so")
+	if ok {
+		fmt.println("Game code loaded")
+	} else {
+		fmt.eprintln("Using game-code stub")
+	}
+	defer unload_game_code(&game_code)
 
 	assert(
 		sdl.Init(sdl.INIT_EVERYTHING) == 0,
@@ -122,9 +134,9 @@ main :: proc() {
 	event: sdl.Event
 
 	// pointer swap shit for thee game inputs
-	input: [2]Game_input = {}
-	new_input: ^Game_input = &input[0]
-	old_input: ^Game_input = &input[1]
+	input: [2]api.Game_input = {}
+	new_input: ^api.Game_input = &input[0]
+	old_input: ^api.Game_input = &input[1]
 
 	perf_count_frequency: u64 = sdl.GetPerformanceFrequency()
 
@@ -155,14 +167,26 @@ main :: proc() {
 				}
 			}
 		}
+		game_code_load_counter += 1
+		if game_code_load_counter > 120 {
+			unload_game_code(&game_code)
+			game_code, ok = load_game_code("build/libhandmade.so", "build/libhandmade_temp.so")
+			if ok {
+				fmt.println("New Game code loaded")
+			} else {
+				fmt.eprintln("Failed somewhere, Using game-code stub")
+			}
+			game_code_load_counter = 0
+		}
+
 		if (!global_pause) {
 
 			@(static) frame := 0
 			frame += 1
 
 
-			old_keyboard_controller: ^Game_controller_input = Get_controller(old_input, 0)
-			new_keyboard_controller: ^Game_controller_input = Get_controller(new_input, 0)
+			old_keyboard_controller: ^api.Game_controller_input = api.Get_controller(old_input, 0)
+			new_keyboard_controller: ^api.Game_controller_input = api.Get_controller(new_input, 0)
 			reset_controller_input(old_keyboard_controller, new_keyboard_controller)
 			new_keyboard_controller.is_connected = true
 
@@ -174,8 +198,8 @@ main :: proc() {
 					continue
 				}
 				// adjusts index so that the 0 index can be the keyboard
-				old_controller: ^Game_controller_input = Get_controller(old_input, i + 1)
-				new_controller: ^Game_controller_input = Get_controller(new_input, i + 1)
+				old_controller: ^api.Game_controller_input = api.Get_controller(old_input, i + 1)
+				new_controller: ^api.Game_controller_input = api.Get_controller(new_input, i + 1)
 				reset_controller_input(old_controller, new_controller)
 
 				if !sdl.GameControllerGetAttached(v) {
@@ -284,14 +308,14 @@ main :: proc() {
 				process_controller_button_press(&old_controller.Back, &new_controller.Back, back)
 			}
 
-			buffer := Game_offscreen_buffer {
+			buffer := api.Game_offscreen_buffer {
 				memory = p.surface.pixels,
 				width  = p.surface.w,
 				height = p.surface.h,
 				pitch  = p.surface.pitch,
 			}
 
-			game_update_and_render(&game_memory, new_input, &buffer)
+			game_code.update_and_render(&game_memory, new_input, &buffer)
 
 			if keys[sdl.SCANCODE_O] == 1 {
 				debug_draw_vertical(&buffer, 100, 0, buffer.height, 0xFFFFFFFF)
@@ -352,6 +376,7 @@ main :: proc() {
 					mega_cycles_per_frame,
 				)
 			}
+
 			sdl.UpdateWindowSurface(p.window)
 			free_all(context.temp_allocator)
 		}
@@ -382,7 +407,7 @@ process_controller_axis_value :: proc(v, deadzone: i16) -> (result: f32) {
 }
 
 
-reset_controller_input :: proc(old_controller, new_controller: ^Game_controller_input) {
+reset_controller_input :: proc(old_controller, new_controller: ^api.Game_controller_input) {
 	previous_buttons := old_controller.Buttons
 
 	new_controller^ = {}
@@ -396,8 +421,8 @@ reset_controller_input :: proc(old_controller, new_controller: ^Game_controller_
 
 // @(private = "file") // this tag blocks from being found in zed (ctrl+t)
 process_controller_button_press :: proc(
-	old_state: ^Game_button_state,
-	new_state: ^Game_button_state,
+	old_state: ^api.Game_button_state,
+	new_state: ^api.Game_button_state,
 	pressed: u8,
 ) {
 	new_state.ended_down = pressed == 1
@@ -405,8 +430,8 @@ process_controller_button_press :: proc(
 }
 
 process_keyboard_input :: proc(
-	old_controller: ^Game_controller_input,
-	new_controller: ^Game_controller_input,
+	old_controller: ^api.Game_controller_input,
+	new_controller: ^api.Game_controller_input,
 	keys: [^]u8,
 ) {
 	process_controller_button_press(
@@ -477,36 +502,40 @@ resize_surface :: proc(p: ^Platform_SDL) {
 	}
 }
 
-debug_platform_read_entire_file :: proc(path: string) -> (Debug_read_file_result, bool) {
-	result: Debug_read_file_result
+debug_platform_read_entire_file :: proc "c" (path: cstring) -> api.Debug_read_file_result {
+	context = runtime.default_context()
+	result: api.Debug_read_file_result
+	path_string := string(path)
 
-	if data, data_err := os.read_entire_file(path, context.allocator); data_err == nil {
+	if data, data_err := os.read_entire_file(path_string, context.allocator); data_err == nil {
 		result.size = cast(u32)len(data)
 		result.contents = raw_data(data)
 	} else {
-		fmt.eprintfln("Failed reading from '%s'. Error: %v", path, data_err)
-		return result, false
+		fmt.eprintfln("Failed reading from '%s'. Error: %v", path_string, data_err)
 	}
 
-	return result, true
+	return result
 }
 
-debug_platform_write_entire_file :: proc(dst: string, filesize: u32, contents: rawptr) {
+debug_platform_write_entire_file :: proc "c" (dst: cstring, filesize: u32, contents: rawptr) {
+	context = runtime.default_context()
 	bytes := ([^]byte)(contents)[:filesize]
+	dst_string := string(dst)
 
-	write_err := os.write_entire_file(dst, bytes)
+	write_err := os.write_entire_file(dst_string, bytes)
 
 	if write_err != nil {
-		fmt.eprintfln("Failed writing '%s'. Error: %v", dst, write_err)
+		fmt.eprintfln("Failed writing '%s'. Error: %v", dst_string, write_err)
 	}
 }
 
-debug_platform_free_file_memory :: proc(memory: rawptr) {
+debug_platform_free_file_memory :: proc "c" (memory: rawptr) {
+	context = runtime.default_context()
 	free(memory)
 }
 
 
-debug_draw_vertical :: proc(buffer: ^Game_offscreen_buffer, x, top, bottom: i32, color: u32) {
+debug_draw_vertical :: proc(buffer: ^api.Game_offscreen_buffer, x, top, bottom: i32, color: u32) {
 	if x < 0 || x >= buffer.width {
 		return
 	}

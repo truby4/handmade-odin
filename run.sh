@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 
-# If i want to create builds in future..
-# mkdir -p bin
-# odin build src -out:build/handmade
+#!/usr/bin/env bash
+set -eu
+
 mkdir -p build
-odin run src -out:build/handmade -- -internal:true -slow-build:true
+
+odin build src/game \
+	-build-mode:dll \
+	-out:build/libhandmade.so
+
+odin run src/platform \
+	-out:build/handmade \
+	-- \
+	-internal:true \
+	-slow-build:true
