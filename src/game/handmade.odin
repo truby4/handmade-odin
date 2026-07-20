@@ -6,6 +6,8 @@ import api "../shared"
 Game_state :: struct {
 	green_offset: i32,
 	blue_offset:  i32,
+
+	player_pos: [2]i32
 }
 
 render_weird_gradient :: proc(buffer: ^api.Game_offscreen_buffer, blue_offset, green_offset: i32) {
@@ -31,8 +33,36 @@ render_weird_gradient :: proc(buffer: ^api.Game_offscreen_buffer, blue_offset, g
 	}
 }
 
+render_player :: proc(buffer: ^api.Game_offscreen_buffer, pos: [2]i32) {
+	PLAYER_SIZE :: 10
+	PLAYER_COLOR :: u32(0xFFFFFFFF)
+
+	min_x := pos.x
+	min_y := pos.y
+	max_x := pos.x + PLAYER_SIZE
+	max_y := pos.y + PLAYER_SIZE
+
+	if min_x < 0 do min_x = 0
+	if min_y < 0 do min_y = 0
+	if max_x > buffer.width do max_x = buffer.width
+	if max_y > buffer.height do max_y = buffer.height
+
+	if min_x >= max_x || min_y >= max_y {
+		return
+	}
+
+	row := ([^]u8)(uintptr(buffer.memory) + uintptr(min_y * buffer.pitch))
+	for y in min_y ..< max_y {
+		pixel := ([^]u32)(row)
+		for x in min_x ..< max_x {
+			pixel[x] = PLAYER_COLOR
+		}
+		row = ([^]u8)(uintptr(row) + uintptr(buffer.pitch))
+	}
+}
+
 @(export)
-Game_update_and_render :: proc "c" (
+game_update_and_render :: proc "c" (
 	memory: ^api.Game_memory,
 	input: ^api.Game_input,
 	offscreen_buffer: ^api.Game_offscreen_buffer,
@@ -67,7 +97,16 @@ Game_update_and_render :: proc "c" (
 		} else {
 			// Use digital movement tuning
 			if (v.Move_left.ended_down) {
-				game_state.blue_offset += 4
+				game_state.player_pos -= 3
+			}
+			if (v.Move_right.ended_down) {
+				game_state.player_pos.x += 3
+			}
+			if (v.Move_down.ended_down) {
+				game_state.player_pos.y += 10
+			}
+			if (v.Move_up.ended_down) {
+				game_state.player_pos.y -= 3
 			}
 		}
 
@@ -79,4 +118,5 @@ Game_update_and_render :: proc "c" (
 	}
 
 	render_weird_gradient(offscreen_buffer, game_state.blue_offset, game_state.green_offset)
+	render_player(offscreen_buffer, game_state.player_pos)
 }

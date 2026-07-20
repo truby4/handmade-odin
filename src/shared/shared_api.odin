@@ -40,7 +40,7 @@ Game_input :: struct {
 
 // To make sure dont access indexes which dont exist?
 // better to gracefully handle it?
-Get_controller :: proc(input: ^Game_input, index: int) -> ^Game_controller_input {
+get_controller :: proc(input: ^Game_input, index: int) -> ^Game_controller_input {
 	assert(index < len(input.Controllers))
 	return &input.Controllers[index]
 }
@@ -51,9 +51,9 @@ Game_memory :: struct {
 	permanent_storage:               rawptr,
 	transient_storage_size:          u64,
 	transient_storage:               rawptr,
-	debug_platform_read_entire_file: Debug_platform_read_entire_file,
-	debug_platform_write_entire_file: Debug_platform_write_entire_file,
-	debug_platform_free_file_memory: Debug_platform_free_file_memory,
+	debug_platform_read_entire_file: debug_platform_read_entire_file,
+	debug_platform_write_entire_file: debug_platform_write_entire_file,
+	debug_platform_free_file_memory: debug_platform_free_file_memory,
 }
 
 Debug_read_file_result :: struct {
@@ -61,12 +61,12 @@ Debug_read_file_result :: struct {
 	contents: rawptr,
 }
 
-Debug_platform_read_entire_file :: proc "c" (path: cstring) -> Debug_read_file_result
-Debug_platform_write_entire_file :: proc "c" (dst: cstring, filesize: u32, contents: rawptr)
-Debug_platform_free_file_memory :: proc "c" (memory: rawptr)
+debug_platform_read_entire_file :: proc "c" (path: cstring) -> Debug_read_file_result
+debug_platform_write_entire_file :: proc "c" (dst: cstring, filesize: u32, contents: rawptr)
+debug_platform_free_file_memory :: proc "c" (memory: rawptr)
 
 
-Game_update_and_render :: proc "c" (
+game_update_and_render :: proc "c" (
 	memory: ^Game_memory,
 	input: ^Game_input,
 	offscreen_buffer: ^Game_offscreen_buffer,
