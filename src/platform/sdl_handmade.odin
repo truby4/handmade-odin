@@ -12,8 +12,8 @@ import "core:time"
 import sdl "vendor:sdl2"
 import mix "vendor:sdl2/mixer"
 
-WINDOW_WIDTH :: 640
-WINDOW_HEIGHT :: 480
+WINDOW_WIDTH :: 920
+WINDOW_HEIGHT :: 640
 
 GAME_CODE_SO :: "build/libhandmade.so"
 GAME_CODE_TEMP_SO :: "build/libhandmade_temp.so"
@@ -57,9 +57,11 @@ main :: proc() {
 		base_address = 0
 	}
 
-	replay := Replay_State{}
 
-	game_memory: api.Game_memory
+	replay := Replay_State{}
+	thread := api.Thread_Context{}
+
+	game_memory: api.Game_Memory
 	game_memory.permanent_storage_size = Megabytes(64)
 	game_memory.transient_storage_size = Gigabytes(1)
 
@@ -83,8 +85,7 @@ main :: proc() {
 	log.infof("Permanent storage address: %p", game_memory.permanent_storage)
 	log.infof("Transient storage address: %p", game_memory.transient_storage)
 
-	replay.total_memory_size = total_size
-	replay.game_memory_block = game_memory.permanent_storage
+	replay_init(&replay, total_size, game_memory.permanent_storage)
 
 	game_code, ok := load_game_code("build/libhandmade.so", "build/libhandmade_temp.so")
 	if ok {
@@ -101,21 +102,20 @@ main :: proc() {
 
 	defer sdl.Quit()
 
-	// TODO(atruby): How do we reliably query refreshrate in SDL?
-	monitor_refresh_hz := 60
-	game_update_hz := monitor_refresh_hz
-	target_seconds_per_frame := 1.0 / cast(f32)game_update_hz
-
 	p.window = sdl.CreateWindow(
 		"Handmade Odin",
 		sdl.WINDOWPOS_CENTERED,
 		sdl.WINDOWPOS_CENTERED,
 		WINDOW_WIDTH,
 		WINDOW_HEIGHT,
-		sdl.WINDOW_SHOWN,
+		sdl.WINDOW_SHOWN, // for prototyping taking out resizable
 	)
 	assert(p.window != nil, fmt.tprintf("Error creating window: %s", sdl.GetError()))
 	defer sdl.DestroyWindow(p.window)
+
+	monitor_refresh_hz := get_monitor_refresh_rate(p.window)
+	game_update_hz := monitor_refresh_hz
+	target_seconds_per_frame := 1.0 / cast(f32)game_update_hz
 
 	p.input_system = input_system_init()
 
@@ -138,9 +138,9 @@ main :: proc() {
 	event: sdl.Event
 
 	// pointer swap shit for thee game inputs
-	input: [2]api.Game_input = {}
-	new_input: ^api.Game_input = &input[0]
-	old_input: ^api.Game_input = &input[1]
+	input: [2]api.Game_Input = {}
+	new_input: ^api.Game_Input = &input[0]
+	old_input: ^api.Game_Input = &input[1]
 
 	perf_count_frequency: u64 = sdl.GetPerformanceFrequency()
 
@@ -175,17 +175,17 @@ main :: proc() {
 					}
 				case sdl.Keycode.L:
 					if event.key.repeat == 0 {
-						if replay.recording {
+						if replay.recording_index != 0 {
 							end_recording(&replay)
 
-							if begin_playback(&replay) {
+							if begin_playback(&replay, 1) {
 								log.info("Playback started")
 							}
-						} else if replay.playing {
+						} else if replay.playing_index != 0 {
 							end_playback(&replay)
 							log.info("Playback stopped")
 						} else {
-							if begin_recording(&replay) {
+							if begin_recording(&replay, 1) {
 								log.info("Recording started")
 							}
 						}
@@ -220,26 +220,26 @@ main :: proc() {
 
 			collect_game_input(p.input_system, old_input, new_input)
 
-			buffer := api.Game_offscreen_buffer {
+			buffer := api.Game_Offscreen_Buffer {
 				memory = p.surface.pixels,
 				width  = p.surface.w,
 				height = p.surface.h,
 				pitch  = p.surface.pitch,
 			}
 
-			if replay.recording {
+			if replay.recording_index != 0 {
 				if !record_input(&replay, new_input) {
 					end_recording(&replay)
 				}
 			}
 
-			if replay.playing {
+			if replay.playing_index != 0 {
 				if !playback_input(&replay, new_input) {
 					log.error("Playback failed")
 				}
 			}
 
-			game_code.update_and_render(&game_memory, new_input, &buffer)
+			game_code.update_and_render(&thread, &game_memory, new_input, &buffer)
 
 			// All work done, now measure how long its been
 			work_seconds_elapsed: f32 = get_seconds_elapsed(
@@ -320,9 +320,9 @@ resize_surface :: proc(p: ^Platform_SDL) {
 	}
 }
 
-debug_platform_read_entire_file :: proc "c" (path: cstring) -> api.Debug_read_file_result {
+debug_platform_read_entire_file :: proc "c" (thread: ^api.Thread_Context, path: cstring) -> api.Debug_Read_File_Result {
 	context = runtime.default_context()
-	result: api.Debug_read_file_result
+	result: api.Debug_Read_File_Result
 	path_string := string(path)
 
 	if data, data_err := os.read_entire_file(path_string, context.allocator); data_err == nil {
@@ -335,7 +335,7 @@ debug_platform_read_entire_file :: proc "c" (path: cstring) -> api.Debug_read_fi
 	return result
 }
 
-debug_platform_write_entire_file :: proc "c" (dst: cstring, filesize: u32, contents: rawptr) {
+debug_platform_write_entire_file :: proc "c" (thread: ^api.Thread_Context, dst: cstring, filesize: u32, contents: rawptr) {
 	context = runtime.default_context()
 	bytes := ([^]byte)(contents)[:filesize]
 	dst_string := string(dst)
@@ -347,13 +347,13 @@ debug_platform_write_entire_file :: proc "c" (dst: cstring, filesize: u32, conte
 	}
 }
 
-debug_platform_free_file_memory :: proc "c" (memory: rawptr) {
+debug_platform_free_file_memory :: proc "c" (thread: ^api.Thread_Context, memory: rawptr) {
 	context = runtime.default_context()
 	free(memory)
 }
 
 
-debug_draw_vertical :: proc(buffer: ^api.Game_offscreen_buffer, x, top, bottom: i32, color: u32) {
+debug_draw_vertical :: proc(buffer: ^api.Game_Offscreen_Buffer, x, top, bottom: i32, color: u32) {
 	if x < 0 || x >= buffer.width {
 		return
 	}
@@ -385,4 +385,28 @@ debug_draw_vertical :: proc(buffer: ^api.Game_offscreen_buffer, x, top, bottom: 
 		pixel = ([^]u8)(uintptr(pixel) + uintptr(buffer.pitch))
 
 	}
+}
+
+get_monitor_refresh_rate :: proc(window: ^sdl.Window) -> int {
+	DEFAULT_REFRESH_HZ :: 60
+
+	display_index := sdl.GetWindowDisplayIndex(window)
+	if display_index < 0 {
+		log.warnf("Unable to determine window display: %s; using %d Hz", sdl.GetError(), DEFAULT_REFRESH_HZ)
+		return DEFAULT_REFRESH_HZ
+	}
+
+	display_mode: sdl.DisplayMode
+	if sdl.GetCurrentDisplayMode(display_index, &display_mode) != 0 {
+		log.warnf("Unable to query display mode: %s; using %d Hz", sdl.GetError(), DEFAULT_REFRESH_HZ)
+		return DEFAULT_REFRESH_HZ
+	}
+
+	if display_mode.refresh_rate <= 0 {
+		log.warnf("Display refresh rate is unspecified; using %d Hz", DEFAULT_REFRESH_HZ)
+		return DEFAULT_REFRESH_HZ
+	}
+
+	log.infof("Display refresh rate: %d Hz", display_mode.refresh_rate)
+	return int(display_mode.refresh_rate)
 }

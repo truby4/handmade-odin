@@ -1,7 +1,8 @@
 package platform
 
-import "core:log"
 import api "../shared"
+import "core:fmt"
+import "core:log"
 import sdl "vendor:sdl2"
 
 Input_System :: struct {
@@ -27,24 +28,31 @@ input_system_init :: proc() -> ^Input_System {
 
 collect_game_input :: proc(
 	input_system: ^Input_System,
-	old_input: ^api.Game_input,
-	new_input: ^api.Game_input,
+	old_input: ^api.Game_Input,
+	new_input: ^api.Game_Input,
 ) {
-	old_keyboard_controller: ^api.Game_controller_input = api.get_controller(old_input, 0)
-	new_keyboard_controller: ^api.Game_controller_input = api.get_controller(new_input, 0)
+	old_keyboard_controller: ^api.Game_Controller_Input = api.get_controller(old_input, 0)
+	new_keyboard_controller: ^api.Game_Controller_Input = api.get_controller(new_input, 0)
 	reset_controller_input(old_keyboard_controller, new_keyboard_controller)
 	new_keyboard_controller.is_connected = true
 
 	keys := sdl.GetKeyboardState(nil)
 	process_keyboard_input(old_keyboard_controller, new_keyboard_controller, keys)
 
+	mouse_state := sdl.GetMouseState(&new_input.mouse.pos[0], &new_input.mouse.pos[1])
+	process_mouse_button_press(&old_input.mouse.Left_Button, &new_input.mouse.Left_Button, mouse_state, sdl.BUTTON_LMASK)
+	process_mouse_button_press(&old_input.mouse.Middle_Button, &new_input.mouse.Middle_Button, mouse_state, sdl.BUTTON_MMASK)
+	process_mouse_button_press(&old_input.mouse.Right_Button, &new_input.mouse.Right_Button, mouse_state, sdl.BUTTON_RMASK)
+	process_mouse_button_press(&old_input.mouse.X1_Button, &new_input.mouse.X1_Button, mouse_state, sdl.BUTTON_X1MASK)
+	process_mouse_button_press(&old_input.mouse.X2_Button, &new_input.mouse.X2_Button, mouse_state, sdl.BUTTON_X2MASK)
+
 	for v, i in input_system.controllers {
 		if v == nil {
 			continue
 		}
 		// adjusts index so that the 0 index can be the kget_controller
-		old_controller: ^api.Game_controller_input = api.get_controller(old_input, i + 1)
-		new_controller: ^api.Game_controller_input = api.get_controller(new_input, i + 1)
+		old_controller: ^api.Game_Controller_Input = api.get_controller(old_input, i + 1)
+		new_controller: ^api.Game_Controller_Input = api.get_controller(new_input, i + 1)
 		reset_controller_input(old_controller, new_controller)
 
 		if !sdl.GameControllerGetAttached(v) {
@@ -53,10 +61,6 @@ collect_game_input :: proc(
 			continue
 		}
 
-		// the way im trying to copy from casey, this will mean
-		// even if controller is plugged in and not being used it will still
-		// be considered analog?
-		new_controller.is_analog = true
 		new_controller.is_connected = true
 
 		LEFT_THUMB_DEADZONE :: 7849
@@ -73,6 +77,11 @@ collect_game_input :: proc(
 			LEFT_THUMB_DEADZONE,
 		)
 
+		if new_controller.stick_avg_x != 0 || new_controller.stick_avg_y != 0 {
+			new_controller.is_analog = true
+		}
+
+
 		dpad_down := sdl.GameControllerGetButton(v, sdl.GameControllerButton.DPAD_DOWN)
 		dpad_up := sdl.GameControllerGetButton(v, sdl.GameControllerButton.DPAD_UP)
 		dpad_left := sdl.GameControllerGetButton(v, sdl.GameControllerButton.DPAD_LEFT)
@@ -80,15 +89,19 @@ collect_game_input :: proc(
 
 		if dpad_down == 1 {
 			new_controller.stick_avg_y = -1
+			new_controller.is_analog = false
 		}
 		if dpad_up == 1 {
 			new_controller.stick_avg_y = 1
+			new_controller.is_analog = false
 		}
 		if dpad_left == 1 {
 			new_controller.stick_avg_x = -1
+			new_controller.is_analog = false
 		}
 		if dpad_right == 1 {
 			new_controller.stick_avg_x = 1
+			new_controller.is_analog = false
 		}
 
 		threshold: f32 = 0.5
@@ -146,7 +159,6 @@ collect_game_input :: proc(
 	}
 }
 
-
 process_controller_axis_value :: proc(v, deadzone: i16) -> (result: f32) {
 	value := f32(v)
 	deadzone_f := f32(deadzone)
@@ -161,21 +173,34 @@ process_controller_axis_value :: proc(v, deadzone: i16) -> (result: f32) {
 }
 
 
-reset_controller_input :: proc(old_controller, new_controller: ^api.Game_controller_input) {
+reset_controller_input :: proc(old_controller, new_controller: ^api.Game_Controller_Input) {
 	previous_buttons := old_controller.Buttons
 
 	new_controller^ = {}
 
 	new_controller.is_connected = old_controller.is_connected
+	new_controller.is_analog = old_controller.is_analog
 
 	for button, index in previous_buttons {
 		new_controller.Buttons[index].ended_down = button.ended_down
 	}
 }
 
+
+process_mouse_button_press :: proc(
+	old_state: ^api.Game_Button_State,
+	new_state: ^api.Game_Button_State,
+	state: u32,
+	mask: u32,
+) {
+	pressed := (state & mask) != 0
+	new_state.ended_down = pressed
+	new_state.half_transition_count = old_state.ended_down != new_state.ended_down ? 1 : 0
+}
+
 process_controller_button_press :: proc(
-	old_state: ^api.Game_button_state,
-	new_state: ^api.Game_button_state,
+	old_state: ^api.Game_Button_State,
+	new_state: ^api.Game_Button_State,
 	pressed: u8,
 ) {
 	new_state.ended_down = pressed == 1
@@ -183,8 +208,8 @@ process_controller_button_press :: proc(
 }
 
 process_keyboard_input :: proc(
-	old_controller: ^api.Game_controller_input,
-	new_controller: ^api.Game_controller_input,
+	old_controller: ^api.Game_Controller_Input,
+	new_controller: ^api.Game_Controller_Input,
 	keys: [^]u8,
 ) {
 	process_controller_button_press(

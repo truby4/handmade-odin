@@ -14,9 +14,10 @@ Game_code :: struct {
 }
 
 game_update_and_render_stub :: proc "c" (
-	memory: ^api.Game_memory,
-	input: ^api.Game_input,
-	buffer: ^api.Game_offscreen_buffer,
+	thread: ^api.Thread_Context,
+	memory: ^api.Game_Memory,
+	input: ^api.Game_Input,
+	buffer: ^api.Game_Offscreen_Buffer,
 ) {
 }
 

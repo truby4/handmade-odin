@@ -1,6 +1,7 @@
 package game
 
 import "base:runtime"
+import "core:fmt"
 import api "../shared"
 
 Game_state :: struct {
@@ -10,7 +11,7 @@ Game_state :: struct {
 	player_pos: [2]i32
 }
 
-render_weird_gradient :: proc(buffer: ^api.Game_offscreen_buffer, blue_offset, green_offset: i32) {
+render_weird_gradient :: proc(buffer: ^api.Game_Offscreen_Buffer, blue_offset, green_offset: i32) {
 	width := buffer.width
 	height := buffer.height
 	pitch := buffer.pitch
@@ -33,14 +34,14 @@ render_weird_gradient :: proc(buffer: ^api.Game_offscreen_buffer, blue_offset, g
 	}
 }
 
-render_player :: proc(buffer: ^api.Game_offscreen_buffer, pos: [2]i32) {
-	PLAYER_SIZE :: 10
+render_player :: proc(buffer: ^api.Game_Offscreen_Buffer, x, y: i32) {
+	PLAYER_SIZE :: 12
 	PLAYER_COLOR :: u32(0xFFFFFFFF)
 
-	min_x := pos.x
-	min_y := pos.y
-	max_x := pos.x + PLAYER_SIZE
-	max_y := pos.y + PLAYER_SIZE
+	min_x := x
+	min_y := y
+	max_x := x + PLAYER_SIZE
+	max_y := y + PLAYER_SIZE
 
 	if min_x < 0 do min_x = 0
 	if min_y < 0 do min_y = 0
@@ -63,9 +64,10 @@ render_player :: proc(buffer: ^api.Game_offscreen_buffer, pos: [2]i32) {
 
 @(export)
 game_update_and_render :: proc "c" (
-	memory: ^api.Game_memory,
-	input: ^api.Game_input,
-	offscreen_buffer: ^api.Game_offscreen_buffer,
+	thread: ^api.Thread_Context,
+	memory: ^api.Game_Memory,
+	input: ^api.Game_Input,
+	offscreen_buffer: ^api.Game_Offscreen_Buffer,
 ) {
 	context = runtime.default_context()
 	assert(size_of(Game_state) <= memory.permanent_storage_size)
@@ -73,10 +75,11 @@ game_update_and_render :: proc "c" (
 	game_state := cast(^Game_state)memory.permanent_storage
 	if !memory.is_initialised {
 
-		file := memory.debug_platform_read_entire_file("src/data/test.txt")
+		file := memory.debug_platform_read_entire_file(thread, "src/data/test.txt")
 		if file.contents != nil {
-			defer memory.debug_platform_free_file_memory(file.contents)
+			defer memory.debug_platform_free_file_memory(thread, file.contents)
 			memory.debug_platform_write_entire_file(
+				thread,
 				"src/data/test.out",
 				file.size,
 				file.contents,
@@ -89,7 +92,24 @@ game_update_and_render :: proc "c" (
 		// TODO(atruby): Casey says could be more appropraite to do in platform layer?
 		memory.is_initialised = true
 	}
-	for v in input.Controllers {
+
+
+	// left_mouse_button := input.mouse.Left_Button
+	// just_pressed  := left_mouse_button.ended_down && left_mouse_button.half_transition_count > 0
+	// just_released := !left_mouse_button.ended_down && left_mouse_button.half_transition_count > 0
+	// is_held       := left_mouse_button.ended_down
+
+	// if just_pressed {
+	// 	fmt.printfln("JUST PRESSED")
+	// }
+	// if just_released {
+	// 	fmt.printfln("JUST RELEASED")
+	// }
+	// if is_held {
+	// 	fmt.println("IS HELD")
+	// }
+
+	for v in input.controllers {
 		if v.is_analog {
 			// Use analog movement tuning
 			game_state.blue_offset += i32(6.0 * (v.stick_avg_x))
@@ -97,13 +117,13 @@ game_update_and_render :: proc "c" (
 		} else {
 			// Use digital movement tuning
 			if (v.Move_left.ended_down) {
-				game_state.player_pos -= 3
+				game_state.player_pos.x -= 3
 			}
 			if (v.Move_right.ended_down) {
 				game_state.player_pos.x += 3
 			}
 			if (v.Move_down.ended_down) {
-				game_state.player_pos.y += 10
+				game_state.player_pos.y += 20
 			}
 			if (v.Move_up.ended_down) {
 				game_state.player_pos.y -= 3
@@ -118,5 +138,6 @@ game_update_and_render :: proc "c" (
 	}
 
 	render_weird_gradient(offscreen_buffer, game_state.blue_offset, game_state.green_offset)
-	render_player(offscreen_buffer, game_state.player_pos)
+	render_player(offscreen_buffer, game_state.player_pos.x, game_state.player_pos.y)
+	render_player(offscreen_buffer, input.mouse.pos.x, input.mouse.pos.y)
 }
