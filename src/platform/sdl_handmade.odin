@@ -12,8 +12,8 @@ import "core:time"
 import sdl "vendor:sdl2"
 import mix "vendor:sdl2/mixer"
 
-WINDOW_WIDTH :: 920
-WINDOW_HEIGHT :: 640
+WINDOW_WIDTH :: 960
+WINDOW_HEIGHT :: 540
 
 GAME_CODE_SO :: "build/libhandmade.so"
 GAME_CODE_TEMP_SO :: "build/libhandmade_temp.so"
@@ -82,8 +82,8 @@ main :: proc() {
 	)
 
 	log.info("Game memory initialised")
-	log.infof("Permanent storage address: %p", game_memory.permanent_storage)
-	log.infof("Transient storage address: %p", game_memory.transient_storage)
+	log.infof("Permanent storage: %p", game_memory.permanent_storage)
+	log.infof("Transient storage: %p", game_memory.transient_storage)
 
 	replay_init(&replay, total_size, game_memory.permanent_storage)
 
@@ -113,7 +113,8 @@ main :: proc() {
 	assert(p.window != nil, fmt.tprintf("Error creating window: %s", sdl.GetError()))
 	defer sdl.DestroyWindow(p.window)
 
-	monitor_refresh_hz := get_monitor_refresh_rate(p.window)
+	// monitor_refresh_hz := get_monitor_refresh_rate(p.window)
+	monitor_refresh_hz := 30
 	game_update_hz := monitor_refresh_hz
 	target_seconds_per_frame := 1.0 / cast(f32)game_update_hz
 
@@ -141,6 +142,7 @@ main :: proc() {
 	input: [2]api.Game_Input = {}
 	new_input: ^api.Game_Input = &input[0]
 	old_input: ^api.Game_Input = &input[1]
+	new_input.seconds_to_advance_over_update = target_seconds_per_frame
 
 	perf_count_frequency: u64 = sdl.GetPerformanceFrequency()
 
@@ -288,7 +290,7 @@ main :: proc() {
 			ms_per_frame := (1000.0 * f32(counter_elapsed)) / f32(perf_count_frequency)
 			fps := f32(perf_count_frequency) / f32(counter_elapsed)
 
-			if frame % 60 == 0 {
+			if frame % 120 == 0 {
 				fmt.printfln(
 					"%.2fms/f, %.2ff/s, %.2fmc/f",
 					ms_per_frame,
