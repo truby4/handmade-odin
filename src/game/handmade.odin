@@ -2,14 +2,35 @@ package game
 
 import api "../shared"
 import "base:runtime"
-import "core:fmt"
 import "core:math"
 
 Vec2 :: [2]f32
 
 Game_State :: struct {
-	player_tilemap_pos: [2]i32,
-	player:             [2]f32,
+	player_pos: Canonical_Pos,
+}
+
+Tile_Map :: struct {
+	tiles: [^]u32,
+}
+
+World :: struct {
+	tile_side_in_meters: f32,
+	tile_side_in_pixels: i32,
+	meters_to_pixels:    f32,
+	count_x:             i32,
+	count_y:             i32,
+	upper_left_x:        f32,
+	upper_left_y:        f32,
+	tile_map_count_x:    i32,
+	tile_map_count_y:    i32,
+	tile_maps:           [^]Tile_Map,
+}
+
+Canonical_Pos :: struct {
+	tile_map: [2]i32,
+	tile:     [2]i32,
+	tile_rel: [2]f32,
 }
 
 draw_rectangle :: proc(
@@ -49,66 +70,50 @@ draw_rectangle :: proc(
 	}
 }
 
-Tile_Map :: struct {
-	tiles: [^]u32,
-}
+recanonicalise_coord :: proc(
+	world: ^World,
+	tile_count: i32,
+	tile_map_coord: ^i32,
+	tile_coord: ^i32,
+	tile_rel_coord: ^f32,
+) {
+	tile_side := world.tile_side_in_meters
 
-World :: struct {
-	count_x:          i32,
-	count_y:          i32,
-	upper_left_x:     f32,
-	upper_left_y:     f32,
-	tile_width:       f32,
-	tile_height:      f32,
-	tile_map_count_x: i32,
-	tile_map_count_y: i32,
-	tile_maps:        [^]Tile_Map,
-}
+	offset: i32 = i32(math.floor(tile_rel_coord^ / tile_side))
+	tile_coord^ += offset
+	tile_rel_coord^ -= f32(offset) * tile_side
 
-Canonical_Pos :: struct {
-	tile_map: [2]i32,
-	tile:     [2]i32,
-	tile_rel: [2]f32,
-}
+	assert(tile_rel_coord^ >= 0)
+	assert(tile_rel_coord^ <= tile_side)
 
-Raw_Pos :: struct {
-	tile_map: [2]i32,
-	pos:      [2]f32,
-}
-
-get_canonical_pos :: proc(world: ^World, pos: Raw_Pos) -> (new_pos: Canonical_Pos) {
-	new_pos.tile_map = pos.tile_map
-
-	x := pos.pos.x - world.upper_left_x
-	y := pos.pos.y - world.upper_left_y
-	new_pos.tile.x = i32(math.floor(x / world.tile_width))
-	new_pos.tile.y = i32(math.floor(y / world.tile_height))
-
-	new_pos.tile_rel.x = x - f32(new_pos.tile.x) * world.tile_width
-	new_pos.tile_rel.y = y - f32(new_pos.tile.y) * world.tile_height
-
-	assert(new_pos.tile_rel.x >= 0 && new_pos.tile_rel.x < world.tile_width)
-	assert(new_pos.tile_rel.y >= 0 && new_pos.tile_rel.y < world.tile_height)
-
-	if new_pos.tile.x < 0 {
-		new_pos.tile.x = world.count_x + new_pos.tile.x
-		new_pos.tile_map.x -= 1
+	if tile_coord^ < 0 {
+		tile_coord^ += tile_count
+		tile_map_coord^ -= 1
 	}
 
-	if new_pos.tile.y < 0 {
-		new_pos.tile.y = world.count_y + new_pos.tile.y
-		new_pos.tile_map.y -= 1
+	if tile_coord^ >= tile_count {
+		tile_coord^ -= tile_count
+		tile_map_coord^ += 1
 	}
+}
 
-	if new_pos.tile.x >= world.count_x {
-		new_pos.tile.x -= world.count_x
-		new_pos.tile_map.x += 1
-	}
+recanonicalise_pos :: proc(world: ^World, pos: Canonical_Pos) -> (new_pos: Canonical_Pos) {
+	new_pos = pos
 
-	if new_pos.tile.y >= world.count_y {
-		new_pos.tile.y -= world.count_y
-		new_pos.tile_map.y += 1
-	}
+	recanonicalise_coord(
+		world,
+		world.count_x,
+		&new_pos.tile_map.x,
+		&new_pos.tile.x,
+		&new_pos.tile_rel.x,
+	)
+	recanonicalise_coord(
+		world,
+		world.count_y,
+		&new_pos.tile_map.y,
+		&new_pos.tile.y,
+		&new_pos.tile_rel.y,
+	)
 
 	return
 }
@@ -150,13 +155,9 @@ is_tile_map_point_empty :: proc(
 }
 
 
-is_world_point_empty :: proc(world: ^World, pos: Raw_Pos) -> (is_empty: bool) {
-	world_pos := get_canonical_pos(world, pos)
-
-	tile_map := get_tile_map(world, world_pos.tile_map)
-
-	is_empty = is_tile_map_point_empty(world, tile_map, world_pos.tile)
-
+is_world_point_empty :: proc(world: ^World, pos: Canonical_Pos) -> (is_empty: bool) {
+	tile_map := get_tile_map(world, pos.tile_map)
+	is_empty = is_tile_map_point_empty(world, tile_map, pos.tile)
 	return
 }
 
@@ -173,9 +174,10 @@ game_update_and_render :: proc "c" (
 	game := cast(^Game_State)memory.permanent_storage
 
 	if !memory.is_initialised {
-		game.player = Vec2{120, 150}
-		game.player_tilemap_pos = {0, 0}
-		// TODO(atruby): Casey says could be more appropraite to do in platform layer?
+		game.player_pos.tile_map = {0, 0}
+		game.player_pos.tile = {3, 3}
+		game.player_pos.tile_rel = {5, 5}
+
 		memory.is_initialised = true
 	}
 
@@ -193,7 +195,7 @@ game_update_and_render :: proc "c" (
 
 	tile_map_data01 := [9][17]u32 {
 		{1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1},
-		{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
 		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
 		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
 		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
@@ -205,19 +207,19 @@ game_update_and_render :: proc "c" (
 
 	tile_map_data10 := [9][17]u32 {
 		{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
-		{1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1},
-		{1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1},
-		{1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1},
-		{0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1},
-		{1, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1},
-		{1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1},
-		{1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1},
+		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
 		{1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1},
 	}
 
 	tile_map_data11 := [9][17]u32 {
 		{1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1},
-		{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
 		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
 		{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
 		{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
@@ -238,24 +240,24 @@ game_update_and_render :: proc "c" (
 	tile_maps[1][1].tiles = cast([^]u32)&tile_map_data11[0][0]
 
 	world := World {
-		count_x          = 17,
-		count_y          = 9,
-		upper_left_x     = -30,
-		upper_left_y     = 0,
-		tile_width       = 60,
-		tile_height      = 60,
-		tile_map_count_x = 2,
-		tile_map_count_y = 2,
+		tile_side_in_meters = 1.4,
+		tile_side_in_pixels = 60,
+		meters_to_pixels    = 60 / 1.4,
+		count_x             = 17,
+		count_y             = 9,
+		upper_left_x        = -f32(60 / 2),
+		upper_left_y        = 0,
+		tile_map_count_x    = 2,
+		tile_map_count_y    = 2,
 	}
 
 	world.tile_maps = cast([^]Tile_Map)&tile_maps
 
-	player_width := world.tile_width * 0.75
-	player_height := world.tile_height
-	player_left := game.player.x - (player_width / 2)
-	player_top := game.player.y - player_height
+	tile_side := f32(world.tile_side_in_pixels)
+	player_height: f32 = 1.4
+	player_width := player_height * 0.75
 
-	tile_map := get_tile_map(&world, game.player_tilemap_pos)
+	tile_map := get_tile_map(&world, game.player_pos.tile_map)
 	assert(tile_map != nil)
 
 	for controller in input.controllers {
@@ -264,7 +266,7 @@ game_update_and_render :: proc "c" (
 
 		} else {
 			// Use digital movement tuning
-			delta_player_x: f32 // pixels/second
+			delta_player_x: f32 // meters/second
 			delta_player_y: f32
 
 			if controller.Move_up.ended_down {
@@ -280,35 +282,28 @@ game_update_and_render :: proc "c" (
 				delta_player_x = 1
 			}
 
-			delta_player_x *= 64
-			delta_player_y *= 64
+			delta_player_x *= 2
+			delta_player_y *= 2
 
-			new_player_x := game.player.x + input.dt_for_frame * delta_player_x
-			new_player_y := game.player.y + input.dt_for_frame * delta_player_y
+			new_player_pos: Canonical_Pos = game.player_pos
+			new_player_pos.tile_rel.x =
+				game.player_pos.tile_rel.x + input.dt_for_frame * delta_player_x
+			new_player_pos.tile_rel.y =
+				game.player_pos.tile_rel.y + input.dt_for_frame * delta_player_y
+			new_player_pos = recanonicalise_pos(&world, new_player_pos)
 
-			player_pos := Raw_Pos {
-				tile_map = game.player_tilemap_pos,
-				pos      = {new_player_x, new_player_y},
-			}
-			player_left := player_pos
-			player_left.pos.x -= player_width * 0.5
-			player_right := player_pos
-			player_right.pos.x += player_width * 0.5
+			player_left: Canonical_Pos = new_player_pos
+			player_left.tile_rel.x -= player_width * 0.5
+			player_left = recanonicalise_pos(&world, player_left)
 
-			if is_world_point_empty(&world, player_pos) &&
+			player_right: Canonical_Pos = new_player_pos
+			player_right.tile_rel.x += player_width * 0.5
+			player_right = recanonicalise_pos(&world, player_right)
+
+			if is_world_point_empty(&world, new_player_pos) &&
 			   is_world_point_empty(&world, player_left) &&
 			   is_world_point_empty(&world, player_right) {
-				canonical_pos := get_canonical_pos(&world, player_pos)
-
-				game.player_tilemap_pos = canonical_pos.tile_map
-				game.player.x =
-					world.upper_left_x +
-					world.tile_width * f32(canonical_pos.tile.x) +
-					canonical_pos.tile_rel.x
-				game.player.y =
-					world.upper_left_y +
-					world.tile_height * f32(canonical_pos.tile.y) +
-					canonical_pos.tile_rel.y
+				game.player_pos = new_player_pos
 			}
 		}
 	}
@@ -323,7 +318,7 @@ game_update_and_render :: proc "c" (
 		f32(offscreen_buffer.height),
 		1,
 		0,
-		1,
+		0.1,
 	)
 
 	for row in 0 ..< 9 {
@@ -331,21 +326,36 @@ game_update_and_render :: proc "c" (
 			tile_id := get_tile_value_unchecked(&world, tile_map, i32(col), i32(row))
 			gray: f32 = 1.0 if tile_id == 1 else 0.5
 
-			min_x := world.upper_left_x + (f32(col) * world.tile_width)
-			min_y := world.upper_left_y + (f32(row) * world.tile_height)
-			max_x := min_x + f32(world.tile_width)
-			max_y := min_y + f32(world.tile_height)
+			if col == int(game.player_pos.tile.x) && row == int(game.player_pos.tile.y) {
+				gray = 0
+			}
+
+			min_x := world.upper_left_x + f32(col) * tile_side
+			min_y := world.upper_left_y + f32(row) * tile_side
+			max_x := min_x + tile_side
+			max_y := min_y + tile_side
 
 			draw_rectangle(offscreen_buffer, min_x, min_y, max_x, max_y, gray, gray, gray)
 		}
 	}
 
+	player_left :=
+		world.upper_left_x +
+		tile_side * f32(game.player_pos.tile.x) +
+		world.meters_to_pixels * game.player_pos.tile_rel.x -
+		0.5 * world.meters_to_pixels * player_width
+	player_top :=
+		world.upper_left_y +
+		tile_side * f32(game.player_pos.tile.y) +
+		world.meters_to_pixels * game.player_pos.tile_rel.y -
+		world.meters_to_pixels * player_height
+
 	draw_rectangle(
 		offscreen_buffer,
 		player_left,
 		player_top,
-		player_left + player_width,
-		player_top + player_height,
+		player_left + world.meters_to_pixels * player_width,
+		player_top + world.meters_to_pixels * player_height,
 		1,
 		1,
 		0,
