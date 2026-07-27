@@ -4,8 +4,6 @@ import api "../shared"
 import "base:runtime"
 import "core:math"
 
-Vec2 :: [2]f32
-
 Game_State :: struct {
 	player_pos: Canonical_Pos,
 }
@@ -20,8 +18,8 @@ World :: struct {
 	meters_to_pixels:    f32,
 	count_x:             i32,
 	count_y:             i32,
-	upper_left_x:        f32,
-	upper_left_y:        f32,
+	lower_left_x:        f32,
+	lower_left_y:        f32,
 	tile_map_count_x:    i32,
 	tile_map_count_y:    i32,
 	tile_maps:           [^]Tile_Map,
@@ -245,8 +243,8 @@ game_update_and_render :: proc "c" (
 		meters_to_pixels    = 60 / 1.4,
 		count_x             = 17,
 		count_y             = 9,
-		upper_left_x        = -f32(60 / 2),
-		upper_left_y        = 0,
+		lower_left_x        = -f32(60 / 2),
+		lower_left_y        = f32(offscreen_buffer.height),
 		tile_map_count_x    = 2,
 		tile_map_count_y    = 2,
 	}
@@ -270,10 +268,10 @@ game_update_and_render :: proc "c" (
 			delta_player_y: f32
 
 			if controller.Move_up.ended_down {
-				delta_player_y = -1
+				delta_player_y = 1
 			}
 			if controller.Move_down.ended_down {
-				delta_player_y = 1
+				delta_player_y = -1
 			}
 			if controller.Move_left.ended_down {
 				delta_player_x = -1
@@ -330,23 +328,24 @@ game_update_and_render :: proc "c" (
 				gray = 0
 			}
 
-			min_x := world.upper_left_x + f32(col) * tile_side
-			min_y := world.upper_left_y + f32(row) * tile_side
+			min_x := world.lower_left_x + f32(col) * tile_side
+			min_y := world.lower_left_y - f32(row) * tile_side
 			max_x := min_x + tile_side
-			max_y := min_y + tile_side
+			max_y := min_y - tile_side
 
-			draw_rectangle(offscreen_buffer, min_x, min_y, max_x, max_y, gray, gray, gray)
+			// passed min y max y crossed over
+			draw_rectangle(offscreen_buffer, min_x, max_y, max_x, min_y, gray, gray, gray)
 		}
 	}
 
 	player_left :=
-		world.upper_left_x +
+		world.lower_left_x +
 		tile_side * f32(game.player_pos.tile.x) +
 		world.meters_to_pixels * game.player_pos.tile_rel.x -
 		0.5 * world.meters_to_pixels * player_width
 	player_top :=
-		world.upper_left_y +
-		tile_side * f32(game.player_pos.tile.y) +
+		world.lower_left_y -
+		tile_side * f32(game.player_pos.tile.y) -
 		world.meters_to_pixels * game.player_pos.tile_rel.y -
 		world.meters_to_pixels * player_height
 
