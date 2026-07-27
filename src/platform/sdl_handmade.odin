@@ -142,7 +142,7 @@ main :: proc() {
 	input: [2]api.Game_Input = {}
 	new_input: ^api.Game_Input = &input[0]
 	old_input: ^api.Game_Input = &input[1]
-	new_input.dt_for_frame = target_seconds_per_frame
+
 
 	perf_count_frequency: u64 = sdl.GetPerformanceFrequency()
 
@@ -150,6 +150,8 @@ main :: proc() {
 	last_cycle_count: i64 = intrinsics.read_cycle_counter()
 
 	main_loop: for p.running {
+		new_input.dt_for_frame = target_seconds_per_frame
+
 		for sdl.PollEvent(&event) {
 			#partial switch event.type {
 			case .QUIT:
@@ -322,7 +324,10 @@ resize_surface :: proc(p: ^Platform_SDL) {
 	}
 }
 
-debug_platform_read_entire_file :: proc "c" (thread: ^api.Thread_Context, path: cstring) -> api.Debug_Read_File_Result {
+debug_platform_read_entire_file :: proc "c" (
+	thread: ^api.Thread_Context,
+	path: cstring,
+) -> api.Debug_Read_File_Result {
 	context = runtime.default_context()
 	result: api.Debug_Read_File_Result
 	path_string := string(path)
@@ -337,7 +342,12 @@ debug_platform_read_entire_file :: proc "c" (thread: ^api.Thread_Context, path: 
 	return result
 }
 
-debug_platform_write_entire_file :: proc "c" (thread: ^api.Thread_Context, dst: cstring, filesize: u32, contents: rawptr) {
+debug_platform_write_entire_file :: proc "c" (
+	thread: ^api.Thread_Context,
+	dst: cstring,
+	filesize: u32,
+	contents: rawptr,
+) {
 	context = runtime.default_context()
 	bytes := ([^]byte)(contents)[:filesize]
 	dst_string := string(dst)
@@ -394,13 +404,21 @@ get_monitor_refresh_rate :: proc(window: ^sdl.Window) -> int {
 
 	display_index := sdl.GetWindowDisplayIndex(window)
 	if display_index < 0 {
-		log.warnf("Unable to determine window display: %s; using %d Hz", sdl.GetError(), DEFAULT_REFRESH_HZ)
+		log.warnf(
+			"Unable to determine window display: %s; using %d Hz",
+			sdl.GetError(),
+			DEFAULT_REFRESH_HZ,
+		)
 		return DEFAULT_REFRESH_HZ
 	}
 
 	display_mode: sdl.DisplayMode
 	if sdl.GetCurrentDisplayMode(display_index, &display_mode) != 0 {
-		log.warnf("Unable to query display mode: %s; using %d Hz", sdl.GetError(), DEFAULT_REFRESH_HZ)
+		log.warnf(
+			"Unable to query display mode: %s; using %d Hz",
+			sdl.GetError(),
+			DEFAULT_REFRESH_HZ,
+		)
 		return DEFAULT_REFRESH_HZ
 	}
 
