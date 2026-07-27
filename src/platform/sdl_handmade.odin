@@ -142,7 +142,7 @@ main :: proc() {
 	input: [2]api.Game_Input = {}
 	new_input: ^api.Game_Input = &input[0]
 	old_input: ^api.Game_Input = &input[1]
-	new_input.seconds_to_advance_over_update = target_seconds_per_frame
+	new_input.dt_for_frame = target_seconds_per_frame
 
 	perf_count_frequency: u64 = sdl.GetPerformanceFrequency()
 

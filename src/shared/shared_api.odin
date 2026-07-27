@@ -45,7 +45,7 @@ Game_Controller_Input :: struct {
 }
 
 Game_Input :: struct {
-	seconds_to_advance_over_update: f32,
+	dt_for_frame: f32,
 	mouse: Mouse,
 	controllers:   [5]Game_Controller_Input,
 }
