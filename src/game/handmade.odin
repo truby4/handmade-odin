@@ -294,8 +294,8 @@ game_update_and_render :: proc "c" (
 		0.1,
 	)
 
-	center_x: f32 = 0.5 * f32(offscreen_buffer.width)
-	center_y: f32 = 0.5 * f32(offscreen_buffer.height)
+	screen_center_x: f32 = 0.5 * f32(offscreen_buffer.width)
+	screen_center_y: f32 = 0.5 * f32(offscreen_buffer.height)
 
 	for rel_row in -10 ..< 10 {
 		for rel_column in -20 ..< 20 {
@@ -312,8 +312,8 @@ game_update_and_render :: proc "c" (
 				gray = 0.0
 			}
 
-			min_x: f32 = center_x + f32(i32(rel_column) * world.tile_side_in_pixels)
-			min_y: f32 = center_y - f32(i32(rel_row) * world.tile_side_in_pixels)
+			min_x: f32 = screen_center_x + f32(i32(rel_column) * world.tile_side_in_pixels)
+			min_y: f32 = screen_center_y - f32(i32(rel_row) * world.tile_side_in_pixels)
 			max_x: f32 = min_x + f32(world.tile_side_in_pixels)
 			max_y: f32 = min_y - f32(world.tile_side_in_pixels)
 
@@ -323,12 +323,12 @@ game_update_and_render :: proc "c" (
 	}
 
 	player_left: f32 =
-		center_x +
+		screen_center_x +
 		world.meters_to_pixels * game.player_pos.tile_rel.x -
 		0.5 * world.meters_to_pixels * player_width
 
 	player_top: f32 =
-		center_y -
+		screen_center_y -
 		world.meters_to_pixels * game.player_pos.tile_rel.y -
 		world.meters_to_pixels * player_height
 
