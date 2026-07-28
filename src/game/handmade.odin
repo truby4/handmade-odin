@@ -2,8 +2,8 @@ package game
 
 import api "../shared"
 import "base:runtime"
-import "core:math"
 import "core:fmt"
+import "core:math"
 
 Game_State :: struct {
 	player_pos: World_Position,
@@ -31,6 +31,9 @@ World :: struct {
 }
 
 World_Position :: struct {
+	// NOTE(casey): These are fixed point tile locations.  The high
+	// bits are the tile chunk index, and the low bits are the tile
+	// index in the chunk.
 	abs_tile: [2]u32,
 	tile_rel: [2]f32,
 }
@@ -113,13 +116,12 @@ recanonicalise_coord :: proc(world: ^World, tile_coord: ^u32, tile_rel_coord: ^f
 
 	// NOTE(casey): World is assumed to be toroidal topology, if you
 	// step off one end you come back on the other!
-	tile_side := world.tile_side_in_meters
 
 	// e.g. tile 3 tilerel 0.5m
 	// movement was 0.2m so its now tile 3 relative 0.7m
 	//
 	// offset = floor(0.7 / 1.4m) = 0
-	offset: i32 = i32(math.floor(tile_rel_coord^ / tile_side))
+	offset: i32 = i32(math.round(tile_rel_coord^ / world.tile_side_in_meters))
 
 	// so nothing would change with tile_coord
 	tile_coord^ += u32(offset)
@@ -127,11 +129,11 @@ recanonicalise_coord :: proc(world: ^World, tile_coord: ^u32, tile_rel_coord: ^f
 	// so new tile_rel_coord would subtract 0 if offset is 0,
 	// say offset was 1 which indicates rel_coord was over tile_side in meters
 	// that means it would be tile_rel_coord (1.5m) - 1.4m would leave tile_rel_coord as 0.1m
-	tile_rel_coord^ -= f32(offset) * tile_side
+	tile_rel_coord^ -= f32(offset) * world.tile_side_in_meters
 
 	// ensuring its not took too much off or not enough
-	assert(tile_rel_coord^ >= 0)
-	assert(tile_rel_coord^ <= tile_side)
+	assert(tile_rel_coord^ >= -0.5 * world.tile_side_in_meters)
+	assert(tile_rel_coord^ <= 0.5 * world.tile_side_in_meters)
 }
 
 recanonicalise_pos :: proc(world: ^World, pos: World_Position) -> (result: World_Position) {
@@ -319,25 +321,28 @@ game_update_and_render :: proc "c" (
 				gray = 0.0
 			}
 
-			min_x: f32 = screen_center_x + f32(i32(rel_column) * world.tile_side_in_pixels)
-			min_y: f32 = screen_center_y - f32(i32(rel_row) * world.tile_side_in_pixels)
-			max_x: f32 = min_x + f32(world.tile_side_in_pixels)
-			max_y: f32 = min_y - f32(world.tile_side_in_pixels)
+			cen_x: f32 =
+				screen_center_x -
+				world.meters_to_pixels * game.player_pos.tile_rel.x +
+				f32(i32(rel_column) * world.tile_side_in_pixels)
+			cen_y: f32 =
+				screen_center_y +
+				world.meters_to_pixels * game.player_pos.tile_rel.y -
+				f32(i32(rel_row) * world.tile_side_in_pixels)
+
+
+			min_x: f32 = cen_x - 0.5 * f32(world.tile_side_in_pixels)
+			min_y: f32 = cen_y - 0.5 * f32(world.tile_side_in_pixels)
+			max_x: f32 = cen_x + 0.5 * f32(world.tile_side_in_pixels)
+			max_y: f32 = cen_y + 0.5 * f32(world.tile_side_in_pixels)
 
 			// passed min y max y crossed over
-			draw_rectangle(offscreen_buffer, min_x, max_y, max_x, min_y, gray, gray, gray)
+			draw_rectangle(offscreen_buffer, min_x, min_y, max_x, max_y, gray, gray, gray)
 		}
 	}
 
-	player_left: f32 =
-		screen_center_x +
-		world.meters_to_pixels * game.player_pos.tile_rel.x -
-		0.5 * world.meters_to_pixels * player_width
-
-	player_top: f32 =
-		screen_center_y -
-		world.meters_to_pixels * game.player_pos.tile_rel.y -
-		world.meters_to_pixels * player_height
+	player_left: f32 = screen_center_x + -0.5 * world.meters_to_pixels * player_width
+	player_top: f32 = screen_center_y - world.meters_to_pixels * player_height
 
 	draw_rectangle(
 		offscreen_buffer,
