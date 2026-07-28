@@ -297,12 +297,19 @@ game_update_and_render :: proc "c" (
 	screen_center_x: f32 = 0.5 * f32(offscreen_buffer.width)
 	screen_center_y: f32 = 0.5 * f32(offscreen_buffer.height)
 
+	// `rel_column = 0`, `rel_row = 0` means the tile containing the player
+	// hence relative
 	for rel_row in -10 ..< 10 {
 		for rel_column in -20 ..< 20 {
-
+			// these convert the relative to absolute based on player pos
+			// for e.g. if the player is on {10,15}
+			// rel_column = -2  → column = 8
+			// rel_row    =  3  → row    = 18
 			column: u32 = game.player_pos.abs_tile.x + u32(rel_column)
 			row: u32 = game.player_pos.abs_tile.y + u32(rel_row)
+
 			tile_id: u32 = get_tile_value_from_abs(&world, {column, row})
+
 			gray: f32 = 0.5
 			if tile_id == 1 {
 				gray = 1.0
