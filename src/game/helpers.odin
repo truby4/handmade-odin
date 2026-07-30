@@ -1,5 +1,7 @@
 package game
 
+import api "../shared"
+
 generate_map :: proc() -> [256][256]u32 {
 	tile_map_data00 := [9][17]u32 {
 		{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
@@ -79,4 +81,28 @@ generate_map :: proc() -> [256][256]u32 {
 	}
 
 	return chunk
+}
+
+
+render_weird_gradient :: proc(buffer: ^api.Game_Offscreen_Buffer, blue_offset, green_offset: i32) {
+	width := buffer.width
+	height := buffer.height
+	pitch := buffer.pitch
+
+	row := ([^]u8)(buffer.memory)
+
+	for y in 0 ..< height {
+		pixel := ([^]u32)(row)
+
+		for x in 0 ..< width {
+			blue := u8(x + blue_offset)
+			green := u8(y + green_offset)
+
+			pixel[x] = (u32(green) << 8) | u32(blue)
+			// pixel[x] = 0x00FF00FF
+
+		}
+
+		row = ([^]u8)(uintptr(row) + uintptr(pitch))
+	}
 }

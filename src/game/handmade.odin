@@ -6,36 +6,21 @@ import "core:fmt"
 import "core:math"
 
 Game_State :: struct {
-	player_pos: World_Position,
-}
-
-Tile_Chunk :: struct {
-	tiles: [^]u32,
-}
-
-Tile_Chunk_Position :: struct {
-	chunk:    [2]u32,
-	rel_tile: [2]u32,
+	world_arena: Memory_Arena,
+	world:       ^World,
+	player_pos:  Tile_Map_Position,
 }
 
 World :: struct {
-	chunk_shift:         u32,
-	chunk_mask:          u32,
-	tile_side_in_meters: f32,
-	tile_side_in_pixels: i32,
-	meters_to_pixels:    f32,
-	chunk_dim:           u32,
-	tile_chunk_count_x:  u32,
-	tile_chunk_count_y:  u32,
-	tile_chunks:         [^]Tile_Chunk,
+	tile_map: ^Tile_Map,
 }
 
-World_Position :: struct {
-	// NOTE(casey): These are fixed point tile locations.  The high
-	// bits are the tile chunk index, and the low bits are the tile
-	// index in the chunk.
-	abs_tile: [2]u32,
-	tile_rel: [2]f32,
+Memory_Index :: distinct uintptr
+
+Memory_Arena :: struct {
+	size: Memory_Index,
+	base: [^]u8,
+	used: Memory_Index,
 }
 
 draw_rectangle :: proc(
@@ -75,115 +60,29 @@ draw_rectangle :: proc(
 	}
 }
 
-get_tile_chunk :: proc(world: ^World, tile_chunk_pos: [2]u32) -> ^Tile_Chunk {
-	if tile_chunk_pos.x >= 0 &&
-	   tile_chunk_pos.x < world.tile_chunk_count_x &&
-	   tile_chunk_pos.y >= 0 &&
-	   tile_chunk_pos.y < world.tile_chunk_count_y {
-		return &world.tile_chunks[tile_chunk_pos.y * world.tile_chunk_count_x + tile_chunk_pos.x]
-	}
-
-	return nil
+arena_init :: proc(arena: ^Memory_Arena, size: Memory_Index, base: [^]u8) {
+	arena.size = size
+	arena.base = base
+	arena.used = 0
 }
 
+push_size_ :: proc(arena: ^Memory_Arena, size: Memory_Index) -> rawptr {
+	assert(arena.used + size <= arena.size)
 
-get_tile_value_unchecked :: proc(world: ^World, tile_chunk: ^Tile_Chunk, tile_pos: [2]u32) -> u32 {
-	assert(tile_chunk != nil)
-	assert(tile_pos.x < world.chunk_dim)
-	assert(tile_pos.y < world.chunk_dim)
-	return tile_chunk.tiles[tile_pos.y * world.chunk_dim + tile_pos.x]
+	result := rawptr(uintptr(arena.base) + uintptr(arena.used))
+
+	arena.used += size
+	return result
 }
 
-
-get_tile_value :: proc(
-	world: ^World,
-	tile_chunk: ^Tile_Chunk,
-	tile_pos: [2]u32,
-) -> (
-	tile_chunk_value: u32,
-) {
-	if tile_chunk != nil {
-		tile_chunk_value = get_tile_value_unchecked(world, tile_chunk, tile_pos)
-	}
-	return
+push_struct :: proc(arena: ^Memory_Arena, $T: typeid) -> ^T {
+	size := Memory_Index(size_of(T))
+	return cast(^T)push_size_(arena, size)
 }
 
-
-recanonicalise_coord :: proc(world: ^World, tile_coord: ^u32, tile_rel_coord: ^f32) {
-	// TODO(casey): Need to do something that doesn't use the divide/multiply method
-	// for recanonicalizing because this can end up rounding back on to the tile
-	// you just came from.
-
-	// NOTE(casey): World is assumed to be toroidal topology, if you
-	// step off one end you come back on the other!
-
-	// e.g. tile 3 tilerel 0.5m
-	// movement was 0.2m so its now tile 3 relative 0.7m
-	//
-	// offset = floor(0.7 / 1.4m) = 0
-	offset: i32 = i32(math.round(tile_rel_coord^ / world.tile_side_in_meters))
-
-	// so nothing would change with tile_coord
-	tile_coord^ += u32(offset)
-
-	// so new tile_rel_coord would subtract 0 if offset is 0,
-	// say offset was 1 which indicates rel_coord was over tile_side in meters
-	// that means it would be tile_rel_coord (1.5m) - 1.4m would leave tile_rel_coord as 0.1m
-	tile_rel_coord^ -= f32(offset) * world.tile_side_in_meters
-
-	// ensuring its not took too much off or not enough
-	assert(tile_rel_coord^ >= -0.5 * world.tile_side_in_meters)
-	assert(tile_rel_coord^ <= 0.5 * world.tile_side_in_meters)
-}
-
-recanonicalise_pos :: proc(world: ^World, pos: World_Position) -> (result: World_Position) {
-	result = pos
-
-	recanonicalise_coord(world, &result.abs_tile.x, &result.tile_rel.x)
-	recanonicalise_coord(world, &result.abs_tile.y, &result.tile_rel.y)
-
-	return
-}
-
-
-get_chunk_position_for :: proc(
-	world: ^World,
-	abs_tile_pos: [2]u32,
-) -> (
-	result: Tile_Chunk_Position,
-) {
-	// shifts down the absolute tile pos
-	// so say its 1300..
-	// 1300 >> 8:
-	// Before: 00000000 00000000 00000101 00010100 = 1300
-	// After:  00000000 00000000 00000000 00000101 = 5
-	result.chunk.x = abs_tile_pos.x >> world.chunk_shift
-	result.chunk.y = abs_tile_pos.y >> world.chunk_shift
-
-	// Absolute X:  [00000000 00000000 00000101] [00010100]
-	// Mask:        [00000000 00000000 00000000] [11111111] == 0xFF ==  255
-	// Result:      [00000000 00000000 00000000] [00010100]
-	// The upper bits are erased because they are ANDed with zero:
-	// 1 & 0 = 0
-	// The lower eight bits are preserved because they are ANDed with one:
-	// 0 & 1 = 0
-	// 1 & 1 = 1
-	result.rel_tile.x = abs_tile_pos.x & world.chunk_mask
-	result.rel_tile.y = abs_tile_pos.y & world.chunk_mask
-	return
-}
-
-get_tile_value_from_abs :: proc(world: ^World, abs_tile_pos: [2]u32) -> u32 {
-	chunk_pos := get_chunk_position_for(world, abs_tile_pos)
-	tile_chunk := get_tile_chunk(world, chunk_pos.chunk)
-	tile_chunk_value := get_tile_value(world, tile_chunk, chunk_pos.rel_tile)
-	return tile_chunk_value
-}
-
-is_world_point_empty :: proc(world: ^World, pos: World_Position) -> (is_empty: bool) {
-	tile_chunk_value: u32 = get_tile_value_from_abs(world, pos.abs_tile)
-	is_empty = (tile_chunk_value == 0)
-	return
+push_array :: proc(arena: ^Memory_Arena, count: Memory_Index, $T: typeid) -> [^]T {
+	size := count * Memory_Index(size_of(T))
+	return cast([^]T)push_size_(arena, size)
 }
 
 
@@ -197,30 +96,8 @@ game_update_and_render :: proc "c" (
 	context = runtime.default_context()
 	assert(size_of(Game_State) <= memory.permanent_storage_size)
 
-	TILE_MAP_COUNT_X :: 256
-	TILE_MAP_COUNT_Y :: 256
-
-	temp_tiles: [TILE_MAP_COUNT_Y][TILE_MAP_COUNT_X]u32 = generate_map()
-
-	world: World
-	world.chunk_shift = u32(8)
-	world.chunk_mask = (u32(1) << world.chunk_shift) - 1
-	world.chunk_dim = u32(1) << world.chunk_shift
-	world.tile_side_in_meters = 1.4
-	world.tile_side_in_pixels = 60
-	world.meters_to_pixels = 60 / 1.4
-	world.tile_chunk_count_x = 1
-	world.tile_chunk_count_y = 1
-
-	tile_chunk: Tile_Chunk
-	tile_chunk.tiles = cast([^]u32)&temp_tiles
-	world.tile_chunks = &tile_chunk
-
 	player_height: f32 = 1.4
 	player_width := player_height * 0.75
-
-	lower_left_x: f32 = -f32(world.tile_side_in_pixels / 2.0)
-	lower_left_y: f32 = f32(offscreen_buffer.height)
 
 	game := cast(^Game_State)memory.permanent_storage
 
@@ -230,10 +107,80 @@ game_update_and_render :: proc "c" (
 		game.player_pos.tile_rel.x = 5.0
 		game.player_pos.tile_rel.y = 5.0
 
+		game_state_size := size_of(Game_State)
+
+		arena_init(
+			&game.world_arena,
+			Memory_Index(memory.permanent_storage_size - u64(game_state_size)),
+			([^]u8)(uintptr(memory.permanent_storage) + uintptr(game_state_size)),
+		)
+
+		game.world = push_struct(&game.world_arena, World)
+		world: ^World = game.world
+
+		world.tile_map = push_struct(&game.world_arena, Tile_Map)
+		tile_map: ^Tile_Map = world.tile_map
+
+		tile_map.chunk_shift = u32(4)
+		tile_map.chunk_mask = (u32(1) << tile_map.chunk_shift) - 1
+		tile_map.chunk_dim = u32(1) << tile_map.chunk_shift
+
+		tile_map.tile_side_in_meters = 1.4
+		tile_map.tile_side_in_pixels = 60
+		tile_map.meters_to_pixels = 60 / 1.4
+
+		tile_map.tile_chunk_count_x = 128
+		tile_map.tile_chunk_count_y = 128
+
+		tile_chunk: Tile_Chunk
+		// tile_chunk.tiles = cast([^]u32)&temp_tiles
+		tile_map.tile_chunks = push_array(
+			&game.world_arena,
+			Memory_Index(tile_map.tile_chunk_count_x * tile_map.tile_chunk_count_y),
+			Tile_Chunk,
+		)
+
+		lower_left_x: f32 = -f32(tile_map.tile_side_in_pixels / 2.0)
+		lower_left_y: f32 = f32(offscreen_buffer.height)
+
+
+		for y in 0 ..< tile_map.tile_chunk_count_y {
+			for x in 0 ..< tile_map.tile_chunk_count_x {
+				tile_map.tile_chunks[y * tile_map.tile_chunk_count_x + x].tiles = push_array(
+					&game.world_arena,
+					Memory_Index(tile_map.chunk_dim * tile_map.chunk_dim),
+					u32,
+				)
+			}
+		}
+
+		tiles_per_width := 17
+		tiles_per_height := 9
+		for screen_y in 0 ..< 32 {
+			for screen_x in 0 ..< 32 {
+				for tile_y in 0 ..< tiles_per_height {
+					for tile_x in 0 ..< tiles_per_width {
+						abs_tile_x := screen_x * tiles_per_width + tile_x
+						abs_tile_y := screen_y * tiles_per_height + tile_y
+
+						set_tile_value(
+							&game.world_arena,
+							tile_map,
+							{u32(abs_tile_x), u32(abs_tile_y)},
+							1 if (tile_x == tile_y) && tile_y % 2 == 0 else 0,
+						)
+					}
+				}
+			}
+		}
+
 		memory.is_initialised = true
 	}
 
-	tile_side_in_pixels := f32(world.tile_side_in_pixels)
+	world := game.world
+	tile_map := world.tile_map
+	tile_side_in_pixels := f32(tile_map.tile_side_in_pixels)
+	player_speed: f32 = 2.0
 
 	for controller in input.controllers {
 		if controller.is_analog {
@@ -256,28 +203,31 @@ game_update_and_render :: proc "c" (
 			if controller.Move_right.ended_down {
 				delta_player_x = 1
 			}
+			if controller.Action_up.ended_down {
+				player_speed = 10
+			}
 
-			delta_player_x *= 2
-			delta_player_y *= 2
+			delta_player_x *= player_speed
+			delta_player_y *= player_speed
 
-			new_player_pos: World_Position = game.player_pos
+			new_player_pos: Tile_Map_Position = game.player_pos
 			new_player_pos.tile_rel.x =
 				game.player_pos.tile_rel.x + input.dt_for_frame * delta_player_x
 			new_player_pos.tile_rel.y =
 				game.player_pos.tile_rel.y + input.dt_for_frame * delta_player_y
-			new_player_pos = recanonicalise_pos(&world, new_player_pos)
+			new_player_pos = recanonicalise_pos(tile_map, new_player_pos)
 
-			player_left: World_Position = new_player_pos
+			player_left: Tile_Map_Position = new_player_pos
 			player_left.tile_rel.x -= player_width * 0.5
-			player_left = recanonicalise_pos(&world, player_left)
+			player_left = recanonicalise_pos(tile_map, player_left)
 
-			player_right: World_Position = new_player_pos
+			player_right: Tile_Map_Position = new_player_pos
 			player_right.tile_rel.x += player_width * 0.5
-			player_right = recanonicalise_pos(&world, player_right)
+			player_right = recanonicalise_pos(tile_map, player_right)
 
-			if is_world_point_empty(&world, new_player_pos) &&
-			   is_world_point_empty(&world, player_left) &&
-			   is_world_point_empty(&world, player_right) {
+			if is_tilemap_point_empty(tile_map, new_player_pos) &&
+			   is_tilemap_point_empty(tile_map, player_left) &&
+			   is_tilemap_point_empty(tile_map, player_right) {
 				game.player_pos = new_player_pos
 			}
 		}
@@ -310,7 +260,7 @@ game_update_and_render :: proc "c" (
 			column: u32 = game.player_pos.abs_tile.x + u32(rel_column)
 			row: u32 = game.player_pos.abs_tile.y + u32(rel_row)
 
-			tile_id: u32 = get_tile_value_from_abs(&world, {column, row})
+			tile_id: u32 = get_tile_value_from_abs(tile_map, {column, row})
 
 			gray: f32 = 0.5
 			if tile_id == 1 {
@@ -323,58 +273,35 @@ game_update_and_render :: proc "c" (
 
 			cen_x: f32 =
 				screen_center_x -
-				world.meters_to_pixels * game.player_pos.tile_rel.x +
-				f32(i32(rel_column) * world.tile_side_in_pixels)
+				tile_map.meters_to_pixels * game.player_pos.tile_rel.x +
+				f32(i32(rel_column) * tile_map.tile_side_in_pixels)
 			cen_y: f32 =
 				screen_center_y +
-				world.meters_to_pixels * game.player_pos.tile_rel.y -
-				f32(i32(rel_row) * world.tile_side_in_pixels)
+				tile_map.meters_to_pixels * game.player_pos.tile_rel.y -
+				f32(i32(rel_row) * tile_map.tile_side_in_pixels)
 
 
-			min_x: f32 = cen_x - 0.5 * f32(world.tile_side_in_pixels)
-			min_y: f32 = cen_y - 0.5 * f32(world.tile_side_in_pixels)
-			max_x: f32 = cen_x + 0.5 * f32(world.tile_side_in_pixels)
-			max_y: f32 = cen_y + 0.5 * f32(world.tile_side_in_pixels)
+			min_x: f32 = cen_x - 0.5 * f32(tile_map.tile_side_in_pixels)
+			min_y: f32 = cen_y - 0.5 * f32(tile_map.tile_side_in_pixels)
+			max_x: f32 = cen_x + 0.5 * f32(tile_map.tile_side_in_pixels)
+			max_y: f32 = cen_y + 0.5 * f32(tile_map.tile_side_in_pixels)
 
 			// passed min y max y crossed over
 			draw_rectangle(offscreen_buffer, min_x, min_y, max_x, max_y, gray, gray, gray)
 		}
 	}
 
-	player_left: f32 = screen_center_x + -0.5 * world.meters_to_pixels * player_width
-	player_top: f32 = screen_center_y - world.meters_to_pixels * player_height
+	player_left: f32 = screen_center_x + -0.5 * tile_map.meters_to_pixels * player_width
+	player_top: f32 = screen_center_y - tile_map.meters_to_pixels * player_height
 
 	draw_rectangle(
 		offscreen_buffer,
 		player_left,
 		player_top,
-		player_left + world.meters_to_pixels * player_width,
-		player_top + world.meters_to_pixels * player_height,
+		player_left + tile_map.meters_to_pixels * player_width,
+		player_top + tile_map.meters_to_pixels * player_height,
 		1,
 		1,
 		0,
 	)
-}
-
-render_weird_gradient :: proc(buffer: ^api.Game_Offscreen_Buffer, blue_offset, green_offset: i32) {
-	width := buffer.width
-	height := buffer.height
-	pitch := buffer.pitch
-
-	row := ([^]u8)(buffer.memory)
-
-	for y in 0 ..< height {
-		pixel := ([^]u32)(row)
-
-		for x in 0 ..< width {
-			blue := u8(x + blue_offset)
-			green := u8(y + green_offset)
-
-			pixel[x] = (u32(green) << 8) | u32(blue)
-			// pixel[x] = 0x00FF00FF
-
-		}
-
-		row = ([^]u8)(uintptr(row) + uintptr(pitch))
-	}
 }
