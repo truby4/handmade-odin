@@ -326,7 +326,7 @@ resize_surface :: proc(p: ^Platform_SDL) {
 
 debug_platform_read_entire_file :: proc "c" (
 	thread: ^api.Thread_Context,
-	path: cstring,
+	path: string,
 ) -> api.Debug_Read_File_Result {
 	context = runtime.default_context()
 	result: api.Debug_Read_File_Result
@@ -344,7 +344,7 @@ debug_platform_read_entire_file :: proc "c" (
 
 debug_platform_write_entire_file :: proc "c" (
 	thread: ^api.Thread_Context,
-	dst: cstring,
+	dst: string,
 	filesize: u32,
 	contents: rawptr,
 ) {

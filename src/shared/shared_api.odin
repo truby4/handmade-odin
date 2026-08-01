@@ -90,11 +90,11 @@ Debug_Read_File_Result :: struct {
 
 debug_platform_read_entire_file :: proc "c" (
 	thread: ^Thread_Context,
-	path: cstring,
+	path: string,
 ) -> Debug_Read_File_Result
 debug_platform_write_entire_file :: proc "c" (
 	thread: ^Thread_Context,
-	dst: cstring,
+	dst: string,
 	filesize: u32,
 	contents: rawptr,
 )

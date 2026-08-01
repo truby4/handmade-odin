@@ -3,13 +3,15 @@ package game
 import api "../shared"
 import "base:runtime"
 import "core:fmt"
+import "core:log"
 import "core:math"
 import "core:math/rand"
 
 Game_State :: struct {
-	world_arena: Memory_Arena,
-	world:       ^World,
-	player_pos:  Tile_Map_Position,
+	world_arena:   Memory_Arena,
+	world:         ^World,
+	player_pos:    Tile_Map_Position,
+	pixel_pointer: [^]u32,
 }
 
 World :: struct {
@@ -61,6 +63,34 @@ draw_rectangle :: proc(
 	}
 }
 
+Bitmap_Header :: struct #packed {
+	file_type:      u16,
+	file_size:      u32,
+	reserved_1:     u16,
+	reserved_2:     u16,
+	bitmap_offset:  u32,
+	size:           u32,
+	width:          i32,
+	height:         i32,
+	planes:         u16,
+	bits_per_pixel: u16,
+}
+
+debug_load_bmp :: proc(
+	thread_context: ^api.Thread_Context,
+	read_entire_file: api.debug_platform_read_entire_file,
+	filename: string,
+) -> (
+	result: [^]u32,
+) {
+	read_result := read_entire_file(thread_context, filename)
+	if read_result.size != 0 {
+		header := cast(^Bitmap_Header)read_result.contents
+		result = cast([^]u32)(uintptr(read_result.contents) + uintptr(header.bitmap_offset))
+	}
+	return
+}
+
 arena_init :: proc(arena: ^Memory_Arena, size: Memory_Index, base: [^]u8) {
 	arena.size = size
 	arena.base = base
@@ -104,10 +134,15 @@ game_update_and_render :: proc "c" (
 	game := cast(^Game_State)memory.permanent_storage
 
 	if !memory.is_initialised {
+		game.pixel_pointer = debug_load_bmp(
+			thread,
+			memory.debug_platform_read_entire_file,
+			"src/data/test/test_background.bmp",
+		)
 		game.player_pos.abs_tile.x = 3
 		game.player_pos.abs_tile.y = 3
-		game.player_pos.tile_rel.x = 5.0
-		game.player_pos.tile_rel.y = 5.0
+		game.player_pos.offsets.x = 5.0
+		game.player_pos.offsets.y = 5.0
 
 		game_state_size := size_of(Game_State)
 
@@ -165,8 +200,10 @@ game_update_and_render :: proc "c" (
 			} else {
 				rand_choice = rand.uint32_range(0, 3)
 			}
+			created_z_door: bool
 
 			if rand_choice == 2 {
+				created_z_door = true
 				if abs_tile_z == 0 {
 					door_up = true
 				} else {
@@ -223,11 +260,11 @@ game_update_and_render :: proc "c" (
 			door_left = door_right
 			door_bottom = door_top
 
-			if door_up {
-				door_down = true
+			if created_z_door {
+				door_down = !door_down
+				door_up = !door_up
+			} else {
 				door_up = false
-			} else if door_down {
-				door_up = true
 				door_down = false
 			}
 
@@ -240,8 +277,7 @@ game_update_and_render :: proc "c" (
 				} else {
 					abs_tile_z = 0
 				}
-			}
-			else if rand_choice == 1 {
+			} else if rand_choice == 1 {
 				screen_x += 1
 			} else {
 				screen_y += 1
@@ -290,23 +326,31 @@ game_update_and_render :: proc "c" (
 			delta_player_y *= player_speed
 
 			new_player_pos: Tile_Map_Position = game.player_pos
-			new_player_pos.tile_rel.x =
-				game.player_pos.tile_rel.x + input.dt_for_frame * delta_player_x
-			new_player_pos.tile_rel.y =
-				game.player_pos.tile_rel.y + input.dt_for_frame * delta_player_y
+			new_player_pos.offsets.x =
+				game.player_pos.offsets.x + input.dt_for_frame * delta_player_x
+			new_player_pos.offsets.y =
+				game.player_pos.offsets.y + input.dt_for_frame * delta_player_y
 			new_player_pos = recanonicalise_pos(tile_map, new_player_pos)
 
 			player_left: Tile_Map_Position = new_player_pos
-			player_left.tile_rel.x -= player_width * 0.5
+			player_left.offsets.x -= player_width * 0.5
 			player_left = recanonicalise_pos(tile_map, player_left)
 
 			player_right: Tile_Map_Position = new_player_pos
-			player_right.tile_rel.x += player_width * 0.5
+			player_right.offsets.x += player_width * 0.5
 			player_right = recanonicalise_pos(tile_map, player_right)
 
 			if is_tilemap_point_empty(tile_map, new_player_pos) &&
 			   is_tilemap_point_empty(tile_map, player_left) &&
 			   is_tilemap_point_empty(tile_map, player_right) {
+				if !are_on_same_tile(game.player_pos, new_player_pos) {
+					new_tile_value := get_tile_value_from_tile_map_pos(tile_map, new_player_pos)
+					if new_tile_value == 3 {
+						new_player_pos.abs_tile.z += 1
+					} else if new_tile_value == 4 {
+						new_player_pos.abs_tile.z -= 1
+					}
+				}
 				game.player_pos = new_player_pos
 			}
 		}
@@ -360,11 +404,11 @@ game_update_and_render :: proc "c" (
 
 				cen_x: f32 =
 					screen_center_x -
-					meters_to_pixels * game.player_pos.tile_rel.x +
+					meters_to_pixels * game.player_pos.offsets.x +
 					f32(i32(rel_column) * tile_side_in_pixels)
 				cen_y: f32 =
 					screen_center_y +
-					meters_to_pixels * game.player_pos.tile_rel.y -
+					meters_to_pixels * game.player_pos.offsets.y -
 					f32(i32(rel_row) * tile_side_in_pixels)
 
 
@@ -392,4 +436,16 @@ game_update_and_render :: proc "c" (
 		1,
 		0,
 	)
+
+	when true {
+		source := game.pixel_pointer
+		dest := cast([^]u32)offscreen_buffer.memory
+
+		for y in 0 ..< offscreen_buffer.height {
+			for x in 0 ..< offscreen_buffer.width {
+				index := y * offscreen_buffer.width + x
+				dest[index] = source[index]
+			}
+		}
+	}
 }

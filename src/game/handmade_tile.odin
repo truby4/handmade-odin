@@ -10,7 +10,7 @@ Tile_Map_Position :: struct {
 	// bits are the tile chunk index, and the low bits are the tile
 	// index in the chunk.
 	abs_tile: Abs_Tile_Pos,
-	tile_rel: [2]f32,
+	offsets:  [2]f32, // these are the offsets from the tile center
 }
 
 Tile_Chunk :: struct {
@@ -68,8 +68,8 @@ recanonicalise_pos :: proc(
 ) {
 	result = pos
 
-	recanonicalise_coord(tile_map, &result.abs_tile.x, &result.tile_rel.x)
-	recanonicalise_coord(tile_map, &result.abs_tile.y, &result.tile_rel.y)
+	recanonicalise_coord(tile_map, &result.abs_tile.x, &result.offsets.x)
+	recanonicalise_coord(tile_map, &result.abs_tile.y, &result.offsets.y)
 
 	return
 }
@@ -152,9 +152,17 @@ get_tile_value_from_abs :: proc(tile_map: ^Tile_Map, abs_tile_pos: Abs_Tile_Pos)
 	return tile_chunk_value
 }
 
+get_tile_value_from_tile_map_pos :: proc(
+	tile_map: ^Tile_Map,
+	tile_map_pos: Tile_Map_Position,
+) -> u32 {
+	tile_chunk_value := get_tile_value_from_abs(tile_map, tile_map_pos.abs_tile)
+	return tile_chunk_value
+}
+
 is_tilemap_point_empty :: proc(tile_map: ^Tile_Map, pos: Tile_Map_Position) -> (is_empty: bool) {
 	tile_chunk_value: u32 = get_tile_value_from_abs(tile_map, pos.abs_tile)
-	is_empty = (tile_chunk_value == 1)
+	is_empty = (tile_chunk_value == 1) || (tile_chunk_value == 3) || (tile_chunk_value == 4)
 	return
 }
 
@@ -207,4 +215,8 @@ set_tile_value_chunk :: proc(
 set_tile_value :: proc {
 	set_tile_value_absolute,
 	set_tile_value_chunk,
+}
+
+are_on_same_tile :: proc(a, b: Tile_Map_Position) -> bool {
+	return a.abs_tile == b.abs_tile
 }
