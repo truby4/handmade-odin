@@ -12,6 +12,10 @@ Game_State :: struct {
 	world:         ^World,
 	player_pos:    Tile_Map_Position,
 	pixel_pointer: [^]u32,
+	backdrop:      Loaded_Bitmap,
+	hero_head:     Loaded_Bitmap,
+	hero_cape:     Loaded_Bitmap,
+	hero_torso:    Loaded_Bitmap,
 }
 
 World :: struct {
@@ -63,17 +67,74 @@ draw_rectangle :: proc(
 	}
 }
 
+Loaded_Bitmap :: struct {
+	pixels: [^]u32,
+	width:  i32,
+	height: i32,
+}
+
+draw_bitmap :: proc(
+	buffer: ^api.Game_Offscreen_Buffer,
+	bitmap: Loaded_Bitmap,
+	real_x, real_y: f32,
+) {
+	min_x := i32(math.round(real_x))
+	min_y := i32(math.round(real_y))
+	max_x := i32(math.round(real_x + f32(bitmap.width)))
+	max_y := i32(math.round(real_y + f32(bitmap.height)))
+
+	if min_x < 0 do min_x = 0
+	if min_y < 0 do min_y = 0
+	if max_x > buffer.width do max_x = buffer.width
+	if max_y > buffer.height do max_y = buffer.height
+
+	if min_x >= max_x || min_y >= max_y {
+		return
+	}
+
+	source_row := ([^]u32)(
+		uintptr(bitmap.pixels) + uintptr(bitmap.width * (bitmap.height - 1)) * size_of(u32),
+	)
+
+	dest_row := ([^]u8)(
+		uintptr(buffer.memory) + uintptr(min_x) * size_of(u32) + uintptr(min_y * buffer.pitch),
+	)
+
+	for y in min_y ..< max_y {
+		dest := cast([^]u32)dest_row
+		source := source_row
+
+		for x in min_x ..< max_x {
+			index := x - min_x
+			dest[index] = source[index]
+		}
+
+		dest_row = ([^]u8)(uintptr(dest_row) + uintptr(buffer.pitch))
+
+		source_row = ([^]u32)(uintptr(source_row) - uintptr(bitmap.width) * size_of(u32))
+	}
+}
+
 Bitmap_Header :: struct #packed {
-	file_type:      u16,
-	file_size:      u32,
-	reserved_1:     u16,
-	reserved_2:     u16,
-	bitmap_offset:  u32,
-	size:           u32,
-	width:          i32,
-	height:         i32,
-	planes:         u16,
-	bits_per_pixel: u16,
+	file_type:        u16,
+	file_size:        u32,
+	reserved_1:       u16,
+	reserved_2:       u16,
+	bitmap_offset:    u32,
+	size:             u32,
+	width:            i32,
+	height:           i32,
+	planes:           u16,
+	bits_per_pixel:   u16,
+	compression:      u32,
+	size_of_bitmap:   u32,
+	horz_resolution:  i32,
+	vert_resolution:  i32,
+	colors_used:      u32,
+	colors_important: u32,
+	red_mask:         u32,
+	green_mask:       u32,
+	blue_mask:        u32,
 }
 
 debug_load_bmp :: proc(
@@ -81,13 +142,31 @@ debug_load_bmp :: proc(
 	read_entire_file: api.debug_platform_read_entire_file,
 	filename: string,
 ) -> (
-	result: [^]u32,
+	result: Loaded_Bitmap,
 ) {
 	read_result := read_entire_file(thread_context, filename)
+
 	if read_result.size != 0 {
 		header := cast(^Bitmap_Header)read_result.contents
-		result = cast([^]u32)(uintptr(read_result.contents) + uintptr(header.bitmap_offset))
+
+		pixels := cast([^]u32)(uintptr(read_result.contents) + uintptr(header.bitmap_offset))
+
+		result.pixels = pixels
+		result.width = header.width
+		result.height = header.height
+
+		source_dest := pixels
+
+		for y in 0 ..< header.height {
+			for x in 0 ..< header.width {
+				pixel_index := y * header.width + x
+				value := source_dest[pixel_index]
+
+				source_dest[pixel_index] = (value >> 8) | (value << 24)
+			}
+		}
 	}
+
 	return
 }
 
@@ -134,11 +213,27 @@ game_update_and_render :: proc "c" (
 	game := cast(^Game_State)memory.permanent_storage
 
 	if !memory.is_initialised {
-		game.pixel_pointer = debug_load_bmp(
+		game.backdrop = debug_load_bmp(
 			thread,
 			memory.debug_platform_read_entire_file,
 			"src/data/test/test_background.bmp",
 		)
+		game.hero_head = debug_load_bmp(
+			thread,
+			memory.debug_platform_read_entire_file,
+			"src/data/test/test_hero_front_head.bmp",
+		)
+		game.hero_cape = debug_load_bmp(
+			thread,
+			memory.debug_platform_read_entire_file,
+			"src/data/test/test_hero_front_cape.bmp",
+		)
+		game.hero_torso = debug_load_bmp(
+			thread,
+			memory.debug_platform_read_entire_file,
+			"src/data/test/test_hero_front_torso.bmp",
+		)
+
 		game.player_pos.abs_tile.x = 3
 		game.player_pos.abs_tile.y = 3
 		game.player_pos.offsets.x = 5.0
@@ -437,15 +532,5 @@ game_update_and_render :: proc "c" (
 		0,
 	)
 
-	when true {
-		source := game.pixel_pointer
-		dest := cast([^]u32)offscreen_buffer.memory
-
-		for y in 0 ..< offscreen_buffer.height {
-			for x in 0 ..< offscreen_buffer.width {
-				index := y * offscreen_buffer.width + x
-				dest[index] = source[index]
-			}
-		}
-	}
+	draw_bitmap(offscreen_buffer, game.backdrop, 0, 0)
 }
