@@ -4,6 +4,7 @@ import api "../shared"
 import "base:runtime"
 import "core:fmt"
 import "core:math"
+import "core:math/rand"
 
 Game_State :: struct {
 	world_arena: Memory_Arena,
@@ -99,6 +100,7 @@ game_update_and_render :: proc "c" (
 	player_height: f32 = 1.4
 	player_width := player_height * 0.75
 
+
 	game := cast(^Game_State)memory.permanent_storage
 
 	if !memory.is_initialised {
@@ -126,51 +128,123 @@ game_update_and_render :: proc "c" (
 		tile_map.chunk_dim = u32(1) << tile_map.chunk_shift
 
 		tile_map.tile_side_in_meters = 1.4
-		tile_map.tile_side_in_pixels = 60
-		tile_map.meters_to_pixels = 60 / 1.4
 
 		tile_map.tile_chunk_count_x = 128
 		tile_map.tile_chunk_count_y = 128
+		tile_map.tile_chunk_count_z = 2
 
 		tile_chunk: Tile_Chunk
 		// tile_chunk.tiles = cast([^]u32)&temp_tiles
 		tile_map.tile_chunks = push_array(
 			&game.world_arena,
-			Memory_Index(tile_map.tile_chunk_count_x * tile_map.tile_chunk_count_y),
+			Memory_Index(
+				tile_map.tile_chunk_count_x *
+				tile_map.tile_chunk_count_y *
+				tile_map.tile_chunk_count_z,
+			),
 			Tile_Chunk,
 		)
 
-		lower_left_x: f32 = -f32(tile_map.tile_side_in_pixels / 2.0)
-		lower_left_y: f32 = f32(offscreen_buffer.height)
-
-
-		for y in 0 ..< tile_map.tile_chunk_count_y {
-			for x in 0 ..< tile_map.tile_chunk_count_x {
-				tile_map.tile_chunks[y * tile_map.tile_chunk_count_x + x].tiles = push_array(
-					&game.world_arena,
-					Memory_Index(tile_map.chunk_dim * tile_map.chunk_dim),
-					u32,
-				)
-			}
-		}
-
 		tiles_per_width := 17
 		tiles_per_height := 9
-		for screen_y in 0 ..< 32 {
-			for screen_x in 0 ..< 32 {
-				for tile_y in 0 ..< tiles_per_height {
-					for tile_x in 0 ..< tiles_per_width {
-						abs_tile_x := screen_x * tiles_per_width + tile_x
-						abs_tile_y := screen_y * tiles_per_height + tile_y
+		screen_x := 0
+		screen_y := 0
+		abs_tile_z := 0
 
-						set_tile_value(
-							&game.world_arena,
-							tile_map,
-							{u32(abs_tile_x), u32(abs_tile_y)},
-							1 if (tile_x == tile_y) && tile_y % 2 == 0 else 0,
-						)
-					}
+		door_left: bool
+		door_right: bool
+		door_top: bool
+		door_bottom: bool
+		door_up: bool
+		door_down: bool
+
+		for screen_index in 0 ..< 100 {
+			rand_choice: u32
+			if door_up || door_down {
+				rand_choice = rand.uint32_range(0, 2)
+			} else {
+				rand_choice = rand.uint32_range(0, 3)
+			}
+
+			if rand_choice == 2 {
+				if abs_tile_z == 0 {
+					door_up = true
+				} else {
+					door_down = true
 				}
+			} else if rand_choice == 1 {
+				door_right = true
+			} else {
+				door_top = true
+			}
+
+			for tile_y in 0 ..< tiles_per_height {
+				for tile_x in 0 ..< tiles_per_width {
+					abs_tile_x := screen_x * tiles_per_width + tile_x
+					abs_tile_y := screen_y * tiles_per_height + tile_y
+
+					tile_value: u32 = 1
+					if tile_x == 0 && (!door_left || tile_y != (tiles_per_height / 2)) {
+						tile_value = 2
+					}
+
+					if tile_x == (tiles_per_width - 1) &&
+					   (!door_right || tile_y != (tiles_per_height / 2)) {
+						tile_value = 2
+					}
+
+					if tile_y == 0 && (!door_bottom || tile_x != (tiles_per_width / 2)) {
+						tile_value = 2
+					}
+
+					if tile_y == (tiles_per_height - 1) &&
+					   (!door_top || (tile_x != tiles_per_width / 2)) {
+						tile_value = 2
+					}
+
+					if tile_x == 10 && tile_y == 6 {
+						if door_up {
+							tile_value = 3
+						}
+						if door_down {
+							tile_value = 4
+						}
+					}
+
+					set_tile_value(
+						&game.world_arena,
+						tile_map,
+						Abs_Tile_Pos{u32(abs_tile_x), u32(abs_tile_y), u32(abs_tile_z)},
+						tile_value,
+					)
+				}
+			}
+
+			door_left = door_right
+			door_bottom = door_top
+
+			if door_up {
+				door_down = true
+				door_up = false
+			} else if door_down {
+				door_up = true
+				door_down = false
+			}
+
+			door_right = false
+			door_top = false
+
+			if rand_choice == 2 {
+				if abs_tile_z == 0 {
+					abs_tile_z = 1
+				} else {
+					abs_tile_z = 0
+				}
+			}
+			else if rand_choice == 1 {
+				screen_x += 1
+			} else {
+				screen_y += 1
 			}
 		}
 
@@ -179,7 +253,12 @@ game_update_and_render :: proc "c" (
 
 	world := game.world
 	tile_map := world.tile_map
-	tile_side_in_pixels := f32(tile_map.tile_side_in_pixels)
+
+	tile_side_in_pixels: i32 = 60
+	meters_to_pixels: f32 = f32(tile_side_in_pixels) / f32(tile_map.tile_side_in_meters)
+	lower_left_x: f32 = -f32(tile_side_in_pixels / 2.0)
+	lower_left_y: f32 = f32(offscreen_buffer.height)
+
 	player_speed: f32 = 2.0
 
 	for controller in input.controllers {
@@ -260,46 +339,55 @@ game_update_and_render :: proc "c" (
 			column: u32 = game.player_pos.abs_tile.x + u32(rel_column)
 			row: u32 = game.player_pos.abs_tile.y + u32(rel_row)
 
-			tile_id: u32 = get_tile_value_from_abs(tile_map, {column, row})
+			tile_id: u32 = get_tile_value_from_abs(
+				tile_map,
+				{column, row, game.player_pos.abs_tile.z},
+			)
 
-			gray: f32 = 0.5
-			if tile_id == 1 {
-				gray = 1.0
+			if tile_id > 0 {
+				gray: f32 = 0.5
+				if tile_id == 2 {
+					gray = 1.0
+				}
+
+				if tile_id > 2 {
+					gray = 0.25
+				}
+
+				if column == game.player_pos.abs_tile.x && row == game.player_pos.abs_tile.y {
+					gray = 0.0
+				}
+
+				cen_x: f32 =
+					screen_center_x -
+					meters_to_pixels * game.player_pos.tile_rel.x +
+					f32(i32(rel_column) * tile_side_in_pixels)
+				cen_y: f32 =
+					screen_center_y +
+					meters_to_pixels * game.player_pos.tile_rel.y -
+					f32(i32(rel_row) * tile_side_in_pixels)
+
+
+				min_x: f32 = cen_x - 0.5 * f32(tile_side_in_pixels)
+				min_y: f32 = cen_y - 0.5 * f32(tile_side_in_pixels)
+				max_x: f32 = cen_x + 0.5 * f32(tile_side_in_pixels)
+				max_y: f32 = cen_y + 0.5 * f32(tile_side_in_pixels)
+
+				// passed min y max y crossed over
+				draw_rectangle(offscreen_buffer, min_x, min_y, max_x, max_y, gray, gray, gray)
 			}
-
-			if column == game.player_pos.abs_tile.x && row == game.player_pos.abs_tile.y {
-				gray = 0.0
-			}
-
-			cen_x: f32 =
-				screen_center_x -
-				tile_map.meters_to_pixels * game.player_pos.tile_rel.x +
-				f32(i32(rel_column) * tile_map.tile_side_in_pixels)
-			cen_y: f32 =
-				screen_center_y +
-				tile_map.meters_to_pixels * game.player_pos.tile_rel.y -
-				f32(i32(rel_row) * tile_map.tile_side_in_pixels)
-
-
-			min_x: f32 = cen_x - 0.5 * f32(tile_map.tile_side_in_pixels)
-			min_y: f32 = cen_y - 0.5 * f32(tile_map.tile_side_in_pixels)
-			max_x: f32 = cen_x + 0.5 * f32(tile_map.tile_side_in_pixels)
-			max_y: f32 = cen_y + 0.5 * f32(tile_map.tile_side_in_pixels)
-
-			// passed min y max y crossed over
-			draw_rectangle(offscreen_buffer, min_x, min_y, max_x, max_y, gray, gray, gray)
 		}
 	}
 
-	player_left: f32 = screen_center_x + -0.5 * tile_map.meters_to_pixels * player_width
-	player_top: f32 = screen_center_y - tile_map.meters_to_pixels * player_height
+	player_left: f32 = screen_center_x + -0.5 * meters_to_pixels * player_width
+	player_top: f32 = screen_center_y - meters_to_pixels * player_height
 
 	draw_rectangle(
 		offscreen_buffer,
 		player_left,
 		player_top,
-		player_left + tile_map.meters_to_pixels * player_width,
-		player_top + tile_map.meters_to_pixels * player_height,
+		player_left + meters_to_pixels * player_width,
+		player_top + meters_to_pixels * player_height,
 		1,
 		1,
 		0,

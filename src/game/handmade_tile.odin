@@ -2,11 +2,14 @@ package game
 
 import "core:math"
 
+Abs_Tile_Pos :: [3]u32
+Tile_Chunk_Pos :: [3]u32
+
 Tile_Map_Position :: struct {
 	// NOTE(casey): These are fixed point tile locations (abs_tile).  The high
 	// bits are the tile chunk index, and the low bits are the tile
 	// index in the chunk.
-	abs_tile: [2]u32,
+	abs_tile: Abs_Tile_Pos,
 	tile_rel: [2]f32,
 }
 
@@ -15,7 +18,7 @@ Tile_Chunk :: struct {
 }
 
 Tile_Chunk_Position :: struct {
-	chunk:    [2]u32,
+	chunk:    Tile_Chunk_Pos,
 	rel_tile: [2]u32,
 }
 
@@ -23,11 +26,10 @@ Tile_Map :: struct {
 	chunk_shift:         u32,
 	chunk_mask:          u32,
 	tile_side_in_meters: f32,
-	tile_side_in_pixels: i32,
-	meters_to_pixels:    f32,
 	chunk_dim:           u32,
 	tile_chunk_count_x:  u32,
 	tile_chunk_count_y:  u32,
+	tile_chunk_count_z:  u32,
 	tile_chunks:         [^]Tile_Chunk,
 }
 
@@ -73,12 +75,16 @@ recanonicalise_pos :: proc(
 }
 
 
-get_tile_chunk :: proc(world: ^Tile_Map, tile_chunk_pos: [2]u32) -> ^Tile_Chunk {
+get_tile_chunk :: proc(world: ^Tile_Map, tile_chunk_pos: Tile_Chunk_Pos) -> ^Tile_Chunk {
 	if tile_chunk_pos.x >= 0 &&
 	   tile_chunk_pos.x < world.tile_chunk_count_x &&
 	   tile_chunk_pos.y >= 0 &&
-	   tile_chunk_pos.y < world.tile_chunk_count_y {
-		return &world.tile_chunks[tile_chunk_pos.y * world.tile_chunk_count_x + tile_chunk_pos.x]
+	   tile_chunk_pos.y < world.tile_chunk_count_y &&
+	   tile_chunk_pos.z >= 0 &&
+	   tile_chunk_pos.z < world.tile_chunk_count_z {
+		return(
+			&world.tile_chunks[tile_chunk_pos.z * world.tile_chunk_count_y * world.tile_chunk_count_x + tile_chunk_pos.y * world.tile_chunk_count_x + tile_chunk_pos.x] \
+		)
 	}
 
 	return nil
@@ -104,7 +110,7 @@ get_tile_value :: proc(
 ) -> (
 	tile_chunk_value: u32,
 ) {
-	if tile_chunk != nil {
+	if tile_chunk != nil && tile_chunk.tiles != nil {
 		tile_chunk_value = get_tile_value_unchecked(tile_map, tile_chunk, tile_pos)
 	}
 	return
@@ -113,7 +119,7 @@ get_tile_value :: proc(
 
 get_chunk_position_for :: proc(
 	tile_map: ^Tile_Map,
-	abs_tile_pos: [2]u32,
+	abs_tile_pos: Abs_Tile_Pos,
 ) -> (
 	result: Tile_Chunk_Position,
 ) {
@@ -124,6 +130,7 @@ get_chunk_position_for :: proc(
 	// After:  00000000 00000000 00000000 00000101 = 5
 	result.chunk.x = abs_tile_pos.x >> tile_map.chunk_shift
 	result.chunk.y = abs_tile_pos.y >> tile_map.chunk_shift
+	result.chunk.z = abs_tile_pos.z
 
 	// Absolute X:  [00000000 00000000 00000101] [00010100]
 	// Mask:        [00000000 00000000 00000000] [11111111] == 0xFF ==  255
@@ -138,7 +145,7 @@ get_chunk_position_for :: proc(
 	return
 }
 
-get_tile_value_from_abs :: proc(tile_map: ^Tile_Map, abs_tile_pos: [2]u32) -> u32 {
+get_tile_value_from_abs :: proc(tile_map: ^Tile_Map, abs_tile_pos: Abs_Tile_Pos) -> u32 {
 	chunk_pos := get_chunk_position_for(tile_map, abs_tile_pos)
 	tile_chunk := get_tile_chunk(tile_map, chunk_pos.chunk)
 	tile_chunk_value := get_tile_value(tile_map, tile_chunk, chunk_pos.rel_tile)
@@ -147,7 +154,7 @@ get_tile_value_from_abs :: proc(tile_map: ^Tile_Map, abs_tile_pos: [2]u32) -> u3
 
 is_tilemap_point_empty :: proc(tile_map: ^Tile_Map, pos: Tile_Map_Position) -> (is_empty: bool) {
 	tile_chunk_value: u32 = get_tile_value_from_abs(tile_map, pos.abs_tile)
-	is_empty = (tile_chunk_value == 0)
+	is_empty = (tile_chunk_value == 1)
 	return
 }
 
@@ -167,13 +174,21 @@ set_tile_value_unchecked :: proc(
 set_tile_value_absolute :: proc(
 	arena: ^Memory_Arena,
 	tile_map: ^Tile_Map,
-	abs_pos: [2]u32,
+	abs_pos: Abs_Tile_Pos,
 	value: u32,
 ) {
 	chunk_pos := get_chunk_position_for(tile_map, abs_pos)
 	chunk := get_tile_chunk(tile_map, chunk_pos.chunk)
 
 	assert(chunk != nil)
+
+	if chunk.tiles == nil {
+		tile_count: u32 = tile_map.chunk_dim * tile_map.chunk_dim
+		chunk.tiles = push_array(arena, Memory_Index(tile_count), u32)
+		for tile_index in 0 ..< tile_count {
+			chunk.tiles[tile_index] = 1
+		}
+	}
 
 	set_tile_value(tile_map, chunk, chunk_pos.rel_tile, value)
 }
@@ -184,7 +199,7 @@ set_tile_value_chunk :: proc(
 	rel_pos: [2]u32,
 	value: u32,
 ) {
-	if chunk != nil {
+	if chunk != nil && chunk.tiles != nil {
 		set_tile_value_unchecked(tile_map, chunk, rel_pos, value)
 	}
 }
