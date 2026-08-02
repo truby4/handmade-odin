@@ -73,6 +73,23 @@ Loaded_Bitmap :: struct {
 	height: i32,
 }
 
+Bit_Scan_Result :: struct {
+	found: bool,
+	index: u32,
+}
+
+find_least_significant_set_bit :: proc(value: u32) -> (result: Bit_Scan_Result) {
+	for test: u32 = 0; test < 32; test += 1 {
+		if value & (u32(1) << test) != 0 {
+			result.index = test
+			result.found = true
+			break
+		}
+	}
+
+	return
+}
+
 draw_bitmap :: proc(
 	buffer: ^api.Game_Offscreen_Buffer,
 	bitmap: Loaded_Bitmap,
@@ -106,7 +123,25 @@ draw_bitmap :: proc(
 
 		for x in min_x ..< max_x {
 			index := x - min_x
-			dest[index] = source[index]
+			source_color := source[index]
+			a := f32((source_color >> 24) & 0xff) / 255.0
+			source_r := f32((source_color >> 16) & 0xff)
+			source_g := f32((source_color >> 8) & 0xff)
+			source_b := f32((source_color >> 0) & 0xff)
+
+			dest_color := dest[index]
+			dest_r := f32((dest_color >> 16) & 0xff)
+			dest_g := f32((dest_color >> 8) & 0xff)
+			dest_b := f32((dest_color >> 0) & 0xff)
+
+			r := (1.0 - a) * dest_r + a * source_r
+			g := (1.0 - a) * dest_g + a * source_g
+			b := (1.0 - a) * dest_b + a * source_b
+
+			dest[index] =
+				u32(r + 0.5) << 16 |
+				u32(g + 0.5) << 8 |
+				u32(b + 0.5) << 0
 		}
 
 		dest_row = ([^]u8)(uintptr(dest_row) + uintptr(buffer.pitch))
@@ -155,14 +190,35 @@ debug_load_bmp :: proc(
 		result.width = header.width
 		result.height = header.height
 
+		assert(header.compression == 3)
+
+		red_mask := header.red_mask
+		green_mask := header.green_mask
+		blue_mask := header.blue_mask
+		alpha_mask := ~(red_mask | green_mask | blue_mask)
+
+		red_shift := find_least_significant_set_bit(red_mask)
+		green_shift := find_least_significant_set_bit(green_mask)
+		blue_shift := find_least_significant_set_bit(blue_mask)
+		alpha_shift := find_least_significant_set_bit(alpha_mask)
+
+		assert(red_shift.found)
+		assert(green_shift.found)
+		assert(blue_shift.found)
+		assert(alpha_shift.found)
+
 		source_dest := pixels
 
 		for y in 0 ..< header.height {
 			for x in 0 ..< header.width {
 				pixel_index := y * header.width + x
-				value := source_dest[pixel_index]
+				color := source_dest[pixel_index]
 
-				source_dest[pixel_index] = (value >> 8) | (value << 24)
+				source_dest[pixel_index] =
+					((color >> alpha_shift.index) & 0xff) << 24 |
+					((color >> red_shift.index) & 0xff) << 16 |
+					((color >> green_shift.index) & 0xff) << 8 |
+					((color >> blue_shift.index) & 0xff) << 0
 			}
 		}
 	}
@@ -464,6 +520,8 @@ game_update_and_render :: proc "c" (
 		0.1,
 	)
 
+	draw_bitmap(offscreen_buffer, game.backdrop, 0, 0)
+
 	screen_center_x: f32 = 0.5 * f32(offscreen_buffer.width)
 	screen_center_y: f32 = 0.5 * f32(offscreen_buffer.height)
 
@@ -483,7 +541,7 @@ game_update_and_render :: proc "c" (
 				{column, row, game.player_pos.abs_tile.z},
 			)
 
-			if tile_id > 0 {
+			if tile_id > 1 {
 				gray: f32 = 0.5
 				if tile_id == 2 {
 					gray = 1.0
@@ -532,5 +590,5 @@ game_update_and_render :: proc "c" (
 		0,
 	)
 
-	draw_bitmap(offscreen_buffer, game.backdrop, 0, 0)
+	draw_bitmap(offscreen_buffer, game.hero_head, player_left, player_top)
 }
