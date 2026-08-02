@@ -33,6 +33,31 @@ Tile_Map :: struct {
 	tile_chunks:         [^]Tile_Chunk,
 }
 
+Tile_Map_Difference :: [3]f32
+
+subtract :: proc(
+	tile_map: ^Tile_Map,
+	a, b: Tile_Map_Position,
+) -> Tile_Map_Difference {
+	a_tiles := [3]f32 {
+		f32(a.abs_tile.x),
+		f32(a.abs_tile.y),
+		f32(a.abs_tile.z),
+	}
+	b_tiles := [3]f32 {
+		f32(b.abs_tile.x),
+		f32(b.abs_tile.y),
+		f32(b.abs_tile.z),
+	}
+
+	result := tile_map.tile_side_in_meters * (a_tiles - b_tiles)
+	result.x += a.offsets.x - b.offsets.x
+	result.y += a.offsets.y - b.offsets.y
+
+	return result
+}
+
+
 recanonicalise_coord :: proc(tile_map: ^Tile_Map, tile_coord: ^u32, tile_rel_coord: ^f32) {
 	// TODO(casey): Need to do something that doesn't use the divide/multiply method
 	// for recanonicalizing because this can end up rounding back on to the tile

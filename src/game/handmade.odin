@@ -8,14 +8,13 @@ import "core:math"
 import "core:math/rand"
 
 Game_State :: struct {
-	world_arena:   Memory_Arena,
-	world:         ^World,
-	player_pos:    Tile_Map_Position,
-	pixel_pointer: [^]u32,
-	backdrop:      Loaded_Bitmap,
-	hero_head:     Loaded_Bitmap,
-	hero_cape:     Loaded_Bitmap,
-	hero_torso:    Loaded_Bitmap,
+	world_arena:           Memory_Arena,
+	world:                 ^World,
+	camera_pos:            Tile_Map_Position,
+	player_pos:            Tile_Map_Position,
+	backdrop:              Loaded_Bitmap,
+	hero_facing_direction: u32,
+	hero_bitmaps:          [4]Hero_Bitmaps,
 }
 
 World :: struct {
@@ -78,6 +77,14 @@ Bit_Scan_Result :: struct {
 	index: u32,
 }
 
+Hero_Bitmaps :: struct {
+	align_x: i32,
+	align_y: i32,
+	head:    Loaded_Bitmap,
+	cape:    Loaded_Bitmap,
+	torso:   Loaded_Bitmap,
+}
+
 find_least_significant_set_bit :: proc(value: u32) -> (result: Bit_Scan_Result) {
 	for test: u32 = 0; test < 32; test += 1 {
 		if value & (u32(1) << test) != 0 {
@@ -94,14 +101,28 @@ draw_bitmap :: proc(
 	buffer: ^api.Game_Offscreen_Buffer,
 	bitmap: Loaded_Bitmap,
 	real_x, real_y: f32,
+	align_x, align_y: i32,
 ) {
-	min_x := i32(math.round(real_x))
-	min_y := i32(math.round(real_y))
-	max_x := i32(math.round(real_x + f32(bitmap.width)))
-	max_y := i32(math.round(real_y + f32(bitmap.height)))
+	real_x_new := real_x - f32(align_x)
+	real_y_new := real_y - f32(align_y)
 
-	if min_x < 0 do min_x = 0
-	if min_y < 0 do min_y = 0
+	min_x := i32(math.round(real_x_new))
+	min_y := i32(math.round(real_y_new))
+	max_x := i32(math.round(real_x_new + f32(bitmap.width)))
+	max_y := i32(math.round(real_y_new + f32(bitmap.height)))
+
+	source_offset_x: i32
+	if min_x < 0 {
+		source_offset_x = -min_x
+		min_x = 0
+	}
+
+	source_offset_y: i32
+	if min_y < 0 {
+		source_offset_y = -min_y
+		min_y = 0
+	}
+
 	if max_x > buffer.width do max_x = buffer.width
 	if max_y > buffer.height do max_y = buffer.height
 
@@ -109,9 +130,11 @@ draw_bitmap :: proc(
 		return
 	}
 
-	source_row := ([^]u32)(
-		uintptr(bitmap.pixels) + uintptr(bitmap.width * (bitmap.height - 1)) * size_of(u32),
-	)
+	source_row_index :=
+		bitmap.width * (bitmap.height - 1) -
+		source_offset_y * bitmap.width +
+		source_offset_x
+	source_row := ([^]u32)(uintptr(bitmap.pixels) + uintptr(source_row_index) * size_of(u32))
 
 	dest_row := ([^]u8)(
 		uintptr(buffer.memory) + uintptr(min_x) * size_of(u32) + uintptr(min_y * buffer.pitch),
@@ -138,10 +161,7 @@ draw_bitmap :: proc(
 			g := (1.0 - a) * dest_g + a * source_g
 			b := (1.0 - a) * dest_b + a * source_b
 
-			dest[index] =
-				u32(r + 0.5) << 16 |
-				u32(g + 0.5) << 8 |
-				u32(b + 0.5) << 0
+			dest[index] = u32(r + 0.5) << 16 | u32(g + 0.5) << 8 | u32(b + 0.5) << 0
 		}
 
 		dest_row = ([^]u8)(uintptr(dest_row) + uintptr(buffer.pitch))
@@ -274,23 +294,33 @@ game_update_and_render :: proc "c" (
 			memory.debug_platform_read_entire_file,
 			"src/data/test/test_background.bmp",
 		)
-		game.hero_head = debug_load_bmp(
-			thread,
-			memory.debug_platform_read_entire_file,
-			"src/data/test/test_hero_front_head.bmp",
-		)
-		game.hero_cape = debug_load_bmp(
-			thread,
-			memory.debug_platform_read_entire_file,
-			"src/data/test/test_hero_front_cape.bmp",
-		)
-		game.hero_torso = debug_load_bmp(
-			thread,
-			memory.debug_platform_read_entire_file,
-			"src/data/test/test_hero_front_torso.bmp",
-		)
+		hero_directions := [4]string{"right", "back", "left", "front"}
+		for direction, index in hero_directions {
+			hero := &game.hero_bitmaps[index]
+			hero.align_x = 72
+			hero.align_y = 182
 
-		game.player_pos.abs_tile.x = 3
+			hero.head = debug_load_bmp(
+				thread,
+				memory.debug_platform_read_entire_file,
+				fmt.tprintf("src/data/test/test_hero_%s_head.bmp", direction),
+			)
+			hero.cape = debug_load_bmp(
+				thread,
+				memory.debug_platform_read_entire_file,
+				fmt.tprintf("src/data/test/test_hero_%s_cape.bmp", direction),
+			)
+			hero.torso = debug_load_bmp(
+				thread,
+				memory.debug_platform_read_entire_file,
+				fmt.tprintf("src/data/test/test_hero_%s_torso.bmp", direction),
+			)
+		}
+
+		game.camera_pos.abs_tile.x = 17 / 2
+		game.camera_pos.abs_tile.y = 9 / 2
+
+		game.player_pos.abs_tile.x = 1
 		game.player_pos.abs_tile.y = 3
 		game.player_pos.offsets.x = 5.0
 		game.player_pos.offsets.y = 5.0
@@ -458,15 +488,19 @@ game_update_and_render :: proc "c" (
 			delta_player_y: f32
 
 			if controller.Move_up.ended_down {
+				game.hero_facing_direction = 1
 				delta_player_y = 1
 			}
 			if controller.Move_down.ended_down {
+				game.hero_facing_direction = 3
 				delta_player_y = -1
 			}
 			if controller.Move_left.ended_down {
+				game.hero_facing_direction = 2
 				delta_player_x = -1
 			}
 			if controller.Move_right.ended_down {
+				game.hero_facing_direction = 0
 				delta_player_x = 1
 			}
 			if controller.Action_up.ended_down {
@@ -504,6 +538,22 @@ game_update_and_render :: proc "c" (
 				}
 				game.player_pos = new_player_pos
 			}
+
+			game.camera_pos.abs_tile.z = game.player_pos.abs_tile.z
+
+			camera_diff := subtract(tile_map, game.player_pos, game.camera_pos)
+			if camera_diff.x > 9.0 * tile_map.tile_side_in_meters {
+				game.camera_pos.abs_tile.x += 17
+			}
+			if camera_diff.x < -9.0 * tile_map.tile_side_in_meters {
+				game.camera_pos.abs_tile.x -= 17
+			}
+			if camera_diff.y > 5.0 * tile_map.tile_side_in_meters {
+				game.camera_pos.abs_tile.y += 9
+			}
+			if camera_diff.y < -5.0 * tile_map.tile_side_in_meters {
+				game.camera_pos.abs_tile.y -= 9
+			}
 		}
 	}
 
@@ -520,7 +570,7 @@ game_update_and_render :: proc "c" (
 		0.1,
 	)
 
-	draw_bitmap(offscreen_buffer, game.backdrop, 0, 0)
+	draw_bitmap(offscreen_buffer, game.backdrop, 0, 0, 0, 0)
 
 	screen_center_x: f32 = 0.5 * f32(offscreen_buffer.width)
 	screen_center_y: f32 = 0.5 * f32(offscreen_buffer.height)
@@ -533,12 +583,12 @@ game_update_and_render :: proc "c" (
 			// for e.g. if the player is on {10,15}
 			// rel_column = -2  → column = 8
 			// rel_row    =  3  → row    = 18
-			column: u32 = game.player_pos.abs_tile.x + u32(rel_column)
-			row: u32 = game.player_pos.abs_tile.y + u32(rel_row)
+			column: u32 = game.camera_pos.abs_tile.x + u32(rel_column)
+			row: u32 = game.camera_pos.abs_tile.y + u32(rel_row)
 
 			tile_id: u32 = get_tile_value_from_abs(
 				tile_map,
-				{column, row, game.player_pos.abs_tile.z},
+				{column, row, game.camera_pos.abs_tile.z},
 			)
 
 			if tile_id > 1 {
@@ -551,17 +601,17 @@ game_update_and_render :: proc "c" (
 					gray = 0.25
 				}
 
-				if column == game.player_pos.abs_tile.x && row == game.player_pos.abs_tile.y {
+				if column == game.camera_pos.abs_tile.x && row == game.camera_pos.abs_tile.y {
 					gray = 0.0
 				}
 
 				cen_x: f32 =
 					screen_center_x -
-					meters_to_pixels * game.player_pos.offsets.x +
+					meters_to_pixels * game.camera_pos.offsets.x +
 					f32(i32(rel_column) * tile_side_in_pixels)
 				cen_y: f32 =
 					screen_center_y +
-					meters_to_pixels * game.player_pos.offsets.y -
+					meters_to_pixels * game.camera_pos.offsets.y -
 					f32(i32(rel_row) * tile_side_in_pixels)
 
 
@@ -575,9 +625,18 @@ game_update_and_render :: proc "c" (
 			}
 		}
 	}
+	diff: Tile_Map_Difference = subtract(tile_map, game.player_pos, game.camera_pos)
+	player_ground_point: [2]f32 = {
+		screen_center_x + meters_to_pixels * diff.x,
+		screen_center_y - meters_to_pixels * diff.y,
+	}
 
-	player_left: f32 = screen_center_x + -0.5 * meters_to_pixels * player_width
-	player_top: f32 = screen_center_y - meters_to_pixels * player_height
+	player_left :=
+		player_ground_point.x - 0.5 * meters_to_pixels * player_width
+
+	player_top :=
+		player_ground_point.y - meters_to_pixels * player_height
+
 
 	draw_rectangle(
 		offscreen_buffer,
@@ -590,5 +649,29 @@ game_update_and_render :: proc "c" (
 		0,
 	)
 
-	draw_bitmap(offscreen_buffer, game.hero_head, player_left, player_top)
+	hero_bitmaps := game.hero_bitmaps[game.hero_facing_direction]
+	draw_bitmap(
+		offscreen_buffer,
+		hero_bitmaps.torso,
+		player_ground_point.x,
+		player_ground_point.y,
+		hero_bitmaps.align_x,
+		hero_bitmaps.align_y,
+	)
+	draw_bitmap(
+		offscreen_buffer,
+		hero_bitmaps.cape,
+		player_ground_point.x,
+		player_ground_point.y,
+		hero_bitmaps.align_x,
+		hero_bitmaps.align_y,
+	)
+	draw_bitmap(
+		offscreen_buffer,
+		hero_bitmaps.head,
+		player_ground_point.x,
+		player_ground_point.y,
+		hero_bitmaps.align_x,
+		hero_bitmaps.align_y,
+	)
 }
