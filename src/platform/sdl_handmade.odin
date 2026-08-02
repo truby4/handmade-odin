@@ -32,7 +32,9 @@ Config :: struct {
 @(private = "file")
 Platform_SDL :: struct {
 	running:      bool,
-	surface:      ^sdl.Surface,
+	fullscreen:   bool,
+	surface:      ^sdl.Surface, // window surface
+	backbuffer:   ^sdl.Surface, // fixed 960x540 game buffer
 	window:       ^sdl.Window,
 	input_system: ^Input_System,
 	music:        ^mix.Music,
@@ -108,10 +110,20 @@ main :: proc() {
 		sdl.WINDOWPOS_CENTERED,
 		WINDOW_WIDTH,
 		WINDOW_HEIGHT,
-		sdl.WINDOW_SHOWN, // for prototyping taking out resizable
+		sdl.WINDOW_SHOWN & sdl.WINDOW_RESIZABLE,
 	)
 	assert(p.window != nil, fmt.tprintf("Error creating window: %s", sdl.GetError()))
 	defer sdl.DestroyWindow(p.window)
+
+	p.backbuffer = sdl.CreateRGBSurfaceWithFormat(
+		0,
+		WINDOW_WIDTH,
+		WINDOW_HEIGHT,
+		32,
+		u32(sdl.PixelFormatEnum.XRGB8888),
+	)
+	assert(p.backbuffer != nil, fmt.tprintf("Error creating backbuffer: %s", sdl.GetError()))
+	defer sdl.FreeSurface(p.backbuffer)
 
 	// monitor_refresh_hz := get_monitor_refresh_rate(p.window)
 	monitor_refresh_hz := 30
@@ -158,7 +170,7 @@ main :: proc() {
 				p.running = false
 			case .WINDOWEVENT:
 				#partial switch event.window.event {
-				case .RESIZED:
+				case .RESIZED, .SIZE_CHANGED:
 					resize_surface(&p)
 				}
 			case .KEYDOWN:
@@ -166,6 +178,24 @@ main :: proc() {
 				#partial switch key {
 				case sdl.Keycode.ESCAPE:
 					p.running = false
+				case sdl.Keycode.RETURN:
+					if event.key.repeat == 0 &&
+					   ((.LALT in event.key.keysym.mod) ||
+					    (.RALT in event.key.keysym.mod)) {
+						p.fullscreen = !p.fullscreen
+
+						fullscreen_flags := sdl.WindowFlags{}
+						if p.fullscreen {
+							fullscreen_flags = sdl.WINDOW_FULLSCREEN_DESKTOP
+						}
+
+						if sdl.SetWindowFullscreen(p.window, fullscreen_flags) != 0 {
+							log.errorf("Unable to toggle fullscreen: %s", sdl.GetError())
+							p.fullscreen = !p.fullscreen
+						} else {
+							resize_surface(&p)
+						}
+					}
 				case sdl.Keycode.P:
 					global_pause = !global_pause
 					if mix.PausedMusic() == 1 {
@@ -225,10 +255,10 @@ main :: proc() {
 			collect_game_input(p.input_system, old_input, new_input)
 
 			buffer := api.Game_Offscreen_Buffer {
-				memory = p.surface.pixels,
-				width  = p.surface.w,
-				height = p.surface.h,
-				pitch  = p.surface.pitch,
+				memory = p.backbuffer.pixels,
+				width  = p.backbuffer.w,
+				height = p.backbuffer.h,
+				pitch  = p.backbuffer.pitch,
 			}
 
 			if replay.recording_index != 0 {
@@ -301,10 +331,39 @@ main :: proc() {
 				)
 			}
 
-			sdl.UpdateWindowSurface(p.window)
+			present_backbuffer(&p)
 		}
 		free_all(context.temp_allocator)
 	}
+}
+
+present_backbuffer :: proc(p: ^Platform_SDL) {
+	window := p.surface
+	source := p.backbuffer
+
+	dst_w := source.w
+	dst_h := source.h
+
+	if window.w >= source.w * 2 &&
+	   window.h >= source.h * 2 {
+		dst_w = source.w * 2
+		dst_h = source.h * 2
+	}
+
+	destination := sdl.Rect {
+		x = (window.w - dst_w) / 2,
+		y = (window.h - dst_h) / 2,
+		w = dst_w,
+		h = dst_h,
+	}
+
+	sdl.FillRect(window, nil, 0)
+
+	if sdl.BlitScaled(source, nil, window, &destination) != 0 {
+		log.errorf("Unable to scale backbuffer: %s", sdl.GetError())
+	}
+
+	sdl.UpdateWindowSurface(p.window)
 }
 
 get_wall_clock :: proc() -> u64 {
